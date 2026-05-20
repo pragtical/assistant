@@ -1,6 +1,7 @@
 local test = require "core.test"
 dofile("tests/helper.inc")
 local config = require "core.config"
+local keymap = require "core.keymap"
 local MessageBox = require "widget.messagebox"
 local PromptView = require "plugins.assistant.promptview"
 local Conversation = require "plugins.assistant.conversation"
@@ -304,6 +305,51 @@ test.describe("assistant prompt view", function()
     view:open_model_dialog()
 
     test.equal(agent:loading(), false)
+  end)
+
+  test.it("does not consume ctrl mouse wheel over embedded prompt", function()
+    local agent = Ollama()
+    local view = PromptView({
+      agent = agent,
+      conversation = Conversation(agent, "/tmp")
+    })
+    view.position.x = 0
+    view.position.y = 0
+    view.size.x = 640
+    view.size.y = 480
+    view:update()
+
+    core.root_view.mouse.x = view.prompt.position.x + 4
+    core.root_view.mouse.y = view.prompt.position.y + 4
+    keymap.modkeys.ctrl = true
+
+    local consumed = view:on_mouse_wheel(-1, 0)
+
+    keymap.modkeys.ctrl = false
+
+    test.equal(consumed, false)
+    test.equal(view.prompt.scroll.to.y, 0)
+  end)
+
+  test.it("scrolls embedded prompt on mouse wheel without ctrl", function()
+    local agent = Ollama()
+    local view = PromptView({
+      agent = agent,
+      conversation = Conversation(agent, "/tmp")
+    })
+    view.position.x = 0
+    view.position.y = 0
+    view.size.x = 640
+    view.size.y = 480
+    view:update()
+
+    core.root_view.mouse.x = view.prompt.position.x + 4
+    core.root_view.mouse.y = view.prompt.position.y + 4
+
+    local consumed = view:on_mouse_wheel(-1, 0)
+
+    test.equal(consumed, true)
+    test.equal(view.prompt.scroll.to.y, config.mouse_wheel_scroll)
   end)
 
   test.it("keeps transcript scrolled to bottom when already at bottom", function()

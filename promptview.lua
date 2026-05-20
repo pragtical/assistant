@@ -149,6 +149,16 @@ local function mode_label(mode)
   return tostring(mode or "")
 end
 
+---Return whether only the zoom modifier is pressed.
+local function zoom_modifier_pressed()
+  local ctrl_key = PLATFORM == "Mac OS X" and "cmd" or "ctrl"
+  if not keymap.modkeys[ctrl_key] then return false end
+  for key, status in pairs(keymap.modkeys) do
+    if key ~= ctrl_key and status then return false end
+  end
+  return true
+end
+
 local ACTIVE_STATUSES = {
   loading = true,
   starting = true,
@@ -1719,6 +1729,7 @@ end
 
 ---Handle on mouse wheel.
 function PromptView:on_mouse_wheel(y, x)
+  if zoom_modifier_pressed() then return false end
   local mx = core.root_view and core.root_view.mouse and core.root_view.mouse.x or 0
   local my = core.root_view and core.root_view.mouse and core.root_view.mouse.y or 0
   local transcript_view = self:get_transcript_view()

@@ -2,6 +2,8 @@ local test = require "core.test"
 dofile("tests/helper.inc")
 local core = require "core"
 local common = require "core.common"
+local config = require "core.config"
+local keymap = require "core.keymap"
 local style = require "core.style"
 local Conversation = require "plugins.assistant.conversation"
 local MemoriesList = require "plugins.assistant.ui.memorieslist"
@@ -145,5 +147,40 @@ test.describe("assistant memories list", function()
 
     test.equal(core.active_view, editor.content)
     test.equal(line, 1)
+  end)
+
+  test.it("does not consume ctrl mouse wheel over embedded content editor", function()
+    local item = Conversation.add_memory(root, "Wheel", "content")
+    local editor = MemoriesList.MemoryEditor(root, item)
+    editor:set_position(100, 200)
+    editor:set_size(600, 500)
+    editor:update()
+
+    core.root_view.mouse.x = editor.content.position.x + 4
+    core.root_view.mouse.y = editor.content.position.y + 4
+    keymap.modkeys.ctrl = true
+
+    local consumed = editor:on_mouse_wheel(-1, 0)
+
+    keymap.modkeys.ctrl = false
+
+    test.equal(consumed, false)
+    test.equal(editor.content.scroll.to.y, 0)
+  end)
+
+  test.it("scrolls embedded content editor on mouse wheel without ctrl", function()
+    local item = Conversation.add_memory(root, "Wheel", "content")
+    local editor = MemoriesList.MemoryEditor(root, item)
+    editor:set_position(100, 200)
+    editor:set_size(600, 500)
+    editor:update()
+
+    core.root_view.mouse.x = editor.content.position.x + 4
+    core.root_view.mouse.y = editor.content.position.y + 4
+
+    local consumed = editor:on_mouse_wheel(-1, 0)
+
+    test.equal(consumed, true)
+    test.equal(editor.content.scroll.to.y, config.mouse_wheel_scroll)
   end)
 end)
