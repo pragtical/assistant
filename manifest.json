@@ -1,0 +1,23 @@
+{
+  "addons": [
+    {
+      "id": "assistant",
+      "name": "Assistant",
+      "description": "AI-assisted coding with provider adapters, project context, guarded tools, and editor-native chat UI.",
+      "version": "0.0.1",
+      "mod_version": "3.10.1",
+      "tags": [
+        "ai",
+        "assistant",
+        "coding agent",
+        "llamacpp",
+        "ollama",
+        "openai",
+        "lms",
+        "codex",
+        "copilot",
+        "acp"
+      ]
+    }
+  ]
+}
