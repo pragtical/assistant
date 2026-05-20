@@ -9,6 +9,7 @@ local Conversation = require "plugins.assistant.conversation"
 local PromptView = require "plugins.assistant.promptview"
 local tools = require "plugins.assistant.tools"
 local ConversationsList = require "plugins.assistant.ui.conversationslist"
+local MemoriesList = require "plugins.assistant.ui.memorieslist"
 local HttpBackend = require "plugins.assistant.backend.http"
 local CliBackend = require "plugins.assistant.backend.cli"
 local AppServerBackend = require "plugins.assistant.backend.appserver"
@@ -475,6 +476,33 @@ function assistant.list_conversations(project_dir)
   return view
 end
 
+---Open the saved memories list.
+---@param project_dir string?
+---@return assistant.ui.MemoriesList
+function assistant.list_memories(project_dir)
+  project_dir = project_dir or core.root_project().path
+  local view = MemoriesList(project_dir, function(item, list_view)
+    local editor = MemoriesList.MemoryEditor(project_dir, item, function()
+      list_view:refresh()
+    end)
+    local node = core.root_view:get_active_node_default()
+    node:add_view(editor)
+    core.root_view.root_node:update_layout()
+  end, function(item, delete_project_dir, callback)
+    local deleted = Conversation.delete_memory(delete_project_dir, item.id)
+    if deleted then
+      core.log("Assistant: deleted memory %s", item.id)
+    else
+      core.warn("Assistant: memory not found: %s", item.id)
+    end
+    if callback then callback(deleted) end
+  end)
+  local node = core.root_view:get_active_node_default()
+  node:add_view(view)
+  core.root_view.root_node:update_layout()
+  return view
+end
+
 ---Log the model list for an agent.
 ---@param agent_name string?
 function assistant.list_models(agent_name)
@@ -549,13 +577,7 @@ command.add(nil, {
   end,
 
   ["assistant:list-memories"] = function()
-    local memories = Conversation.list_memories(core.root_project().path)
-    if #memories == 0 then
-      core.log("Assistant: no memories for this project.")
-    end
-    for _, item in ipairs(memories) do
-      core.log("Assistant memory %s - %s", item.id, item.title or "Memory")
-    end
+    assistant.list_memories()
   end,
 
   ["assistant:delete-memory"] = function()

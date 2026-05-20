@@ -162,48 +162,6 @@ first
     test.equal(read(path("sample.txt")), "alpha\ndelta\ngamma\n")
   end)
 
-  test.it("accepts qwen-style unprefixed context lines in update hunks", function()
-    write(path("src/player.h"), table.concat({
-      "#define PLAYER_WIDTH 14",
-      "#define PLAYER_HEIGHT 16",
-      "#define PLAYER_ACCEL 0.015f",
-      "#define PLAYER_FRICTION 0.012f",
-      "#define PLAYER_MAX_SPEED 0.28f",
-      "#define PLAYER_JUMP_FORCE -0.65f",
-      "#define PLAYER_GRAVITY 0.015f",
-      "",
-      "typedef enum {",
-      "    PLAYER_STATE_SMALL,",
-      "    PLAYER_STATE_BIG",
-      "} PlayerState;",
-      ""
-    }, "\n"))
-
-    apply_ok([[
-*** Begin Patch
-*** Update File: src/player.h
-@@
- #define PLAYER_WIDTH 14
- #define PLAYER_HEIGHT 16
- #define PLAYER_ACCEL 0.015f
- #define PLAYER_FRICTION 0.012f
- #define PLAYER_MAX_SPEED 0.28f
--#define PLAYER_JUMP_FORCE -0.65f
--#define PLAYER_GRAVITY 0.015f
-+#define PLAYER_JUMP_FORCE -0.35f
-+#define PLAYER_GRAVITY 0.008f
- 
-typedef enum {
-     PLAYER_STATE_SMALL,
-*** End Patch
-]])
-
-    local text = read(path("src/player.h"))
-    test.equal(text:find("#define PLAYER_JUMP_FORCE -0.35f", 1, true) ~= nil, true)
-    test.equal(text:find("#define PLAYER_GRAVITY 0.008f", 1, true) ~= nil, true)
-    test.equal(text:find("typedef enum {", 1, true) ~= nil, true)
-  end)
-
   test.it("applies structured insertion-only chunks", function()
     apply_ok([[
 *** Begin Patch

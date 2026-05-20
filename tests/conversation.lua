@@ -59,6 +59,20 @@ test.describe("assistant conversation", function()
     test.equal(conversation.context_snapshot.fragments[1].id, "base")
   end)
 
+  test.it("updates memory content without changing its id", function()
+    local item = Conversation.add_memory(root, "Old Rule", "Prefer old patches.")
+
+    local updated = Conversation.update_memory(root, item.id, "New Rule", "Prefer focused patches.")
+    local memories = Conversation.list_memories(root)
+
+    test.equal(updated.id, item.id)
+    test.equal(updated.title, "New Rule")
+    test.equal(updated.content, "Prefer focused patches.")
+    test.equal(memories[1].id, item.id)
+    test.equal(memories[1].title, "New Rule")
+    test.equal(memories[1].content, "Prefer focused patches.")
+  end)
+
   test.it("sends hidden environment context to providers before user prompts", function()
     local agent = Ollama()
     local conversation = Conversation(agent, root)

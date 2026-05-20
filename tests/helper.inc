@@ -85,6 +85,10 @@ package.preload["plugins.assistant.ui.conversationslist"] = function()
   return dofile("ui/conversationslist.lua")
 end
 
+package.preload["plugins.assistant.ui.memorieslist"] = function()
+  return dofile("ui/memorieslist.lua")
+end
+
 package.preload["plugins.assistant.ui.modeldialog"] = function()
   return dofile("ui/modeldialog.lua")
 end

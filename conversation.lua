@@ -273,8 +273,7 @@ end
 ---@param project_dir string|nil
 ---@param title string
 ---@param content string
----@return boolean ok
----@return string|nil id_or_error
+---@return table|nil memory
 function Conversation.add_memory(project_dir, title, content)
   project_dir = project_dir_or_default(project_dir)
   if not mkdirp(Conversation.memories_dir(project_dir)) then return nil end
@@ -287,6 +286,30 @@ function Conversation.add_memory(project_dir, title, content)
   }
   local ok = write_file(Conversation.memory_path(project_dir, item.id), jsonutil.encode(item))
   return ok and item or nil
+end
+
+---Update memory.
+---@param project_dir string|nil
+---@param id string
+---@param title string
+---@param content string
+---@return table|nil memory
+function Conversation.update_memory(project_dir, id, title, content)
+  project_dir = project_dir_or_default(project_dir)
+  id = sanitize_id(id)
+  if not id then return nil end
+  local path = Conversation.memory_path(project_dir, id)
+  local data = read_file(path)
+  if not data then return nil end
+  local decoded = json.decode(data)
+  if type(decoded) ~= "table" then return nil end
+  decoded.id = id
+  decoded.title = title or decoded.title or "Memory"
+  decoded.content = content or decoded.content or ""
+  decoded.created_at = decoded.created_at or now()
+  decoded.updated_at = now()
+  local ok = write_file(path, jsonutil.encode(decoded))
+  return ok and decoded or nil
 end
 
 ---Delete memory.
