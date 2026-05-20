@@ -86,43 +86,37 @@ config.plugins.assistant = common.merge({
       label = "Model",
       description = "Model name sent to the provider. Leave empty for provider default.",
       path = "model",
-      type = "string",
-      default = ""
+      type = "string"
     },
     {
       label = "Base URL",
       description = "Provider base URL. Leave empty for provider default.",
       path = "base_url",
-      type = "string",
-      default = ""
+      type = "string"
     },
     {
       label = "API Key",
       description = "Provider API key. Leave empty to use the environment variable instead.",
       path = "api_key",
-      type = "string",
-      default = ""
+      type = "string"
     },
     {
       label = "API key environment variable",
       description = "Environment variable containing the API key, if needed.",
       path = "api_key_env",
-      type = "string",
-      default = ""
+      type = "string"
     },
     {
       label = "Codex Command",
       description = "Path to the codex executable. Leave empty to search PATH and common user bin directories.",
       path = "codex_command",
-      type = "string",
-      default = ""
+      type = "string"
     },
     {
       label = "ACP Command",
       description = "Command for generic ACP agents. Presets may ignore this.",
       path = "acp_command",
-      type = "string",
-      default = ""
+      type = "string"
     },
     {
       label = "ACP Transport",
@@ -153,8 +147,7 @@ config.plugins.assistant = common.merge({
       label = "Copilot Command",
       description = "Path to the GitHub Copilot executable. Leave empty to use `copilot --acp --stdio`.",
       path = "copilot_command",
-      type = "string",
-      default = ""
+      type = "string"
     },
     {
       label = "Keep Alive",

@@ -465,6 +465,7 @@ function Conversation:new(agent, project_dir)
   self.agent = agent and agent.name or "generic"
   self.backend = agent and agent.backend or "http"
   self.model = agent and agent.model or nil
+  self.reasoning_effort = agent and agent.reasoning_effort or nil
   self.collaboration_mode = nil
   self.local_compaction = nil
   self.assistant_plan = nil
@@ -900,6 +901,7 @@ function Conversation:to_state()
     agent = self.agent,
     backend = self.backend,
     model = self.model,
+    reasoning_effort = self.reasoning_effort,
     collaboration_mode = self.collaboration_mode,
     local_compaction = self.local_compaction,
     assistant_plan = self.assistant_plan,
@@ -932,6 +934,7 @@ function Conversation.from_state(state)
   conversation.agent = state.agent or "generic"
   conversation.backend = state.backend or "http"
   conversation.model = state.model
+  conversation.reasoning_effort = state.reasoning_effort
   conversation.collaboration_mode = state.collaboration_mode
   conversation.local_compaction = state.local_compaction
   conversation.assistant_plan = state.assistant_plan

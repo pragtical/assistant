@@ -227,6 +227,18 @@ local function make_backend(name)
   return HttpBackend()
 end
 
+---Return the model label with reasoning effort when it should be visible.
+---@param agent assistant.Agent
+---@return string label
+local function model_reasoning_label(agent)
+  local model = tostring(agent and agent.model or "")
+  local effort = agent and agent.configured_reasoning_effort and agent:configured_reasoning_effort()
+  if model ~= "" and effort and effort ~= "none" then
+    return string.format("%s (%s)", model, effort)
+  end
+  return model
+end
+
 ---Create a new instance.
 ---@param options table
 function PromptView:new(options)
@@ -237,6 +249,9 @@ function PromptView:new(options)
   self.agent = options and options.agent or make_agent(options and options.agent_name)
   self.backend = options and options.backend or make_backend(self.agent.backend)
   self.conversation = options and options.conversation or Conversation(self.agent)
+  if self.conversation.reasoning_effort ~= nil then
+    self.agent.reasoning_effort = self.conversation.reasoning_effort
+  end
   self.name = self.conversation.title or "Assistant"
   self.pending_assistant = nil
   self.pending_user_input_request = nil
@@ -393,6 +408,7 @@ function PromptView.from_state(state)
   if not conversation then return nil end
   local agent = make_agent(conversation.agent)
   agent.model = conversation.model or agent.model
+  agent.reasoning_effort = conversation.reasoning_effort
   conversation.backend = agent.backend
   return PromptView({
     conversation = conversation,
@@ -650,7 +666,7 @@ function PromptView:refresh_controls()
   local status = self:get_display_status()
   local parts = {
     self.agent.display_name or self.agent.name,
-    self.agent.model or ""
+    model_reasoning_label(self.agent)
   }
   if self.agent:has_capability("reports_usage") then
     if self.agent:has_capability("reports_context") then
@@ -1476,11 +1492,13 @@ function PromptView:open_model_dialog()
       core.warn("Assistant: no models reported by %s", self.agent.display_name or self.agent.name)
       return
     end
-    local dialog = ModelDialog(models, self.agent.model)
+    local dialog = ModelDialog(models, self.agent.model, self.agent:configured_reasoning_effort())
     self.model_dialog = dialog
-    dialog.on_submit = function(_, model)
+    dialog.on_submit = function(_, model, reasoning_effort)
       self.agent.model = model
+      self.agent.reasoning_effort = reasoning_effort
       self.conversation.model = model
+      self.conversation.reasoning_effort = reasoning_effort
       self.conversation:touch()
       self.conversation:save()
       self:refresh()

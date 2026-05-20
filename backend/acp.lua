@@ -21,6 +21,12 @@ local READ_SIZE = 1024 * 8
 local WRITE_SIZE = 64 * 1024
 local SEND_REQUEST_TIMEOUT = 600
 local UI_UPDATE_INTERVAL = 0.08
+local REASONING_EFFORT_VALUES = {
+  none = true,
+  low = true,
+  medium = true,
+  high = true
+}
 
 ---Handle yield ui.
 local function yield_ui(delay)
@@ -759,6 +765,36 @@ local function option_category(option)
   return category
 end
 
+---Normalize a config option token for comparison.
+---@param value any
+---@return string|nil
+local function normalized_config_token(value)
+  if value == nil then return nil end
+  value = tostring(value):lower():match("^%s*(.-)%s*$")
+  if value == "" then return nil end
+  return value
+end
+
+---Return whether a select value matches a configured reasoning effort.
+---@param option table
+---@param effort string
+---@return boolean matches
+local function select_value_matches_reasoning_effort(option, effort)
+  local wanted = normalized_config_token(effort)
+  if not wanted then return false end
+  local candidates = {
+    option.value,
+    option.id,
+    option.name,
+    option.label,
+    option.title
+  }
+  for _, candidate in ipairs(candidates) do
+    if normalized_config_token(candidate) == wanted then return true end
+  end
+  return false
+end
+
 ---Handle model options from config.
 local function model_options_from_config(config_options)
   local labels = {}
@@ -790,9 +826,43 @@ local function model_options_from_config(config_options)
   return labels, mapping
 end
 
+---Handle reasoning options from ACP config.
+---@param config_options table[]|nil
+---@return table<string, table> mapping
+local function reasoning_options_from_config(config_options)
+  local mapping = {}
+  if type(config_options) ~= "table" then return mapping end
+  for _, option in ipairs(config_options) do
+    if type(option) == "table"
+      and option.type == "select"
+      and option_category(option) == "thought_level"
+    then
+      local config_id = option.id or option.configId or option.config_id
+      if config_id then
+        for _, value in ipairs(flatten_select_options(option.options)) do
+          local raw_value = value.value or value.id
+          if raw_value ~= nil then
+            for effort in pairs(REASONING_EFFORT_VALUES) do
+              if not mapping[effort] and select_value_matches_reasoning_effort(value, effort) then
+                mapping[effort] = {
+                  config_id = config_id,
+                  value = tostring(raw_value)
+                }
+              end
+            end
+          end
+        end
+      end
+    end
+  end
+  return mapping
+end
+
 ---Handle remember config options.
 local function remember_config_options(agent, config_options)
   local labels, mapping = model_options_from_config(config_options)
+  local reasoning_mapping = reasoning_options_from_config(config_options)
+  agent.acp_reasoning_options = next(reasoning_mapping) and reasoning_mapping or nil
   if #labels > 0 then
     agent.acp_model_options = mapping
     return labels
@@ -805,6 +875,17 @@ local function selected_model_option(agent)
   if not (agent and agent.model and agent.model ~= "") then return nil end
   local options = agent.acp_model_options
   return type(options) == "table" and options[agent.model] or nil
+end
+
+---Handle selected reasoning option.
+---@param agent assistant.agent.Acp
+---@return table|nil option
+local function selected_reasoning_option(agent)
+  if not (agent and agent.configured_reasoning_effort) then return nil end
+  local effort = agent:configured_reasoning_effort()
+  if not effort then return nil end
+  local options = agent.acp_reasoning_options
+  return type(options) == "table" and options[effort] or nil
 end
 
 ---Handle select current config option.
@@ -1191,6 +1272,7 @@ function AcpBackend:send(agent, conversation, callback)
         mode_request_id = nil
         prompt_request_id = nil
         state.model_config_request_id = nil
+        state.reasoning_config_request_id = nil
         state.stale_session = nil
         set_status(conversation, "starting")
       end
@@ -1252,6 +1334,21 @@ function AcpBackend:send(agent, conversation, callback)
         end
       end
       if self.active_session_id
+        and not state.reasoning_config_request_id
+        and selected_reasoning_option(agent)
+      then
+        local option = selected_reasoning_option(agent)
+        state.reasoning_config_request_id = self:request("session/set_config_option", {
+          sessionId = self.active_session_id,
+          configId = option.config_id,
+          value = option.value
+        }, agent, conversation)
+        if state.reasoning_config_request_id then
+          state.pending[tostring(state.reasoning_config_request_id)] = true
+          state.last_activity_at = system.get_time()
+        end
+      end
+      if self.active_session_id
         and self.supports_modes
         and conversation.collaboration_mode
         and conversation.collaboration_mode ~= ""
@@ -1267,8 +1364,10 @@ function AcpBackend:send(agent, conversation, callback)
         end
       end
       local model_done = not state.model_config_request_id or state.responses[tostring(state.model_config_request_id)]
+      local reasoning_done = not state.reasoning_config_request_id
+        or state.responses[tostring(state.reasoning_config_request_id)]
       local mode_done = not mode_request_id or state.responses[tostring(mode_request_id)]
-      if self.active_session_id and model_done and mode_done and not prompt_request_id then
+      if self.active_session_id and model_done and reasoning_done and mode_done and not prompt_request_id then
         prompt_request_id = self:request("session/prompt", {
           sessionId = self.active_session_id,
           prompt = { text_content_block(last_user_message(conversation)) }

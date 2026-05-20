@@ -137,6 +137,67 @@ test.describe("assistant app-server backend", function()
     test.equal(wrote_initialize, true)
   end)
 
+  test.it("sends configured codex reasoning effort on plain turns", function()
+    local old_reasoning_effort = config.plugins.assistant.reasoning_effort
+    config.plugins.assistant.reasoning_effort = "high"
+    local proc = fake_proc({
+      '{"id":1,"result":{}}\n',
+      '{"id":2,"result":{"thread":{"id":"thr_1"}}}\n',
+      '{"id":3,"result":{"turn":{"id":"turn_1","status":"inProgress"}}}\n',
+      '{"method":"turn/completed","params":{"turn":{"id":"turn_1","status":"completed"}}}\n'
+    })
+    process = {
+      REDIRECT_PIPE = real_process.REDIRECT_PIPE,
+      start = function(command)
+        test.equal(is_codex_appserver(command), true)
+        return proc
+      end
+    }
+
+    local agent = Codex()
+    agent.model = "gpt-5.3-codex"
+    local conversation = Conversation(agent, "project")
+    conversation:add("user", "hello", { autosave = false })
+    local backend = AppServerBackend()
+
+    backend:send(agent, conversation, function() end)
+    coroutine.yield(0.4)
+    config.plugins.assistant.reasoning_effort = old_reasoning_effort
+
+    local writes = table.concat(proc.writes)
+    test.equal(writes:find('"method":"turn/start"', 1, true) ~= nil, true)
+    test.equal(writes:find('"effort":"high"', 1, true) ~= nil, true)
+  end)
+
+  test.it("maps assistant none reasoning to codex minimal on plain turns", function()
+    local old_reasoning_effort = config.plugins.assistant.reasoning_effort
+    config.plugins.assistant.reasoning_effort = "none"
+    local proc = fake_proc({
+      '{"id":1,"result":{}}\n',
+      '{"id":2,"result":{"thread":{"id":"thr_1"}}}\n',
+      '{"id":3,"result":{"turn":{"id":"turn_1","status":"inProgress"}}}\n',
+      '{"method":"turn/completed","params":{"turn":{"id":"turn_1","status":"completed"}}}\n'
+    })
+    process = {
+      REDIRECT_PIPE = real_process.REDIRECT_PIPE,
+      start = function(command)
+        test.equal(is_codex_appserver(command), true)
+        return proc
+      end
+    }
+
+    local agent = Codex()
+    local conversation = Conversation(agent, "project")
+    conversation:add("user", "hello", { autosave = false })
+    local backend = AppServerBackend()
+
+    backend:send(agent, conversation, function() end)
+    coroutine.yield(0.4)
+    config.plugins.assistant.reasoning_effort = old_reasoning_effort
+
+    test.equal(table.concat(proc.writes):find('"effort":"minimal"', 1, true) ~= nil, true)
+  end)
+
   test.it("updates conversation status from codex app-server events", function()
     local proc = fake_proc({
       '{"id":1,"result":{}}\n',

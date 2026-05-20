@@ -986,7 +986,8 @@ end
 ---@return string|nil
 function Agent:configured_reasoning_effort()
   local conf = config.plugins and config.plugins.assistant or {}
-  local value = conf.reasoning_effort
+  local value = self.reasoning_effort
+  if value == nil then value = conf.reasoning_effort end
   if type(value) ~= "string" then return nil end
   value = value:match("^%s*(.-)%s*$")
   if value == "" or not REASONING_EFFORT_VALUES[value] then return nil end

@@ -8,6 +8,13 @@ local Agent = require "plugins.assistant.agent"
 ---@field public approval_policy table
 local Codex = Agent:extend()
 
+local CODEX_REASONING_EFFORT = {
+  none = "minimal",
+  low = "low",
+  medium = "medium",
+  high = "high"
+}
+
 ---Create a new instance.
 ---@param options table?
 function Codex:new(options)
@@ -101,6 +108,7 @@ function Codex:build_collaboration_mode(mode)
   if model and model ~= "" then settings.model = model end
   local reasoning_effort = (type(option) == "table" and option.reasoning_effort)
     or (type(option) == "table" and option.settings and option.settings.reasoning_effort)
+    or self:configured_appserver_reasoning_effort()
   if reasoning_effort and reasoning_effort ~= "" then settings.reasoning_effort = reasoning_effort end
   if type(option) == "table" and type(option.settings) == "table" then
     for k, v in pairs(option.settings) do
@@ -112,6 +120,13 @@ function Codex:build_collaboration_mode(mode)
     mode = kind,
     settings = settings
   }
+end
+
+---Return the configured reasoning effort for Codex app-server fields.
+---@return string|nil effort
+function Codex:configured_appserver_reasoning_effort()
+  local effort = self:configured_reasoning_effort()
+  return effort and CODEX_REASONING_EFFORT[effort] or nil
 end
 
 ---Parse usage.

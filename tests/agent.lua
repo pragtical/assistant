@@ -2314,6 +2314,46 @@ test.describe("assistant agent", function()
     test.equal(plan_mode.settings.model, "gpt-5.5")
   end)
 
+  test.it("maps configured reasoning effort for codex app-server", function()
+    local old_reasoning_effort = config.plugins.assistant.reasoning_effort
+    local agent = Codex()
+
+    config.plugins.assistant.reasoning_effort = "none"
+    test.equal(agent:configured_appserver_reasoning_effort(), "minimal")
+    config.plugins.assistant.reasoning_effort = "low"
+    test.equal(agent:configured_appserver_reasoning_effort(), "low")
+    config.plugins.assistant.reasoning_effort = "medium"
+    test.equal(agent:configured_appserver_reasoning_effort(), "medium")
+    config.plugins.assistant.reasoning_effort = "high"
+    test.equal(agent:configured_appserver_reasoning_effort(), "high")
+    config.plugins.assistant.reasoning_effort = "invalid"
+    test.equal(agent:configured_appserver_reasoning_effort(), nil)
+
+    config.plugins.assistant.reasoning_effort = old_reasoning_effort
+  end)
+
+  test.it("applies configured codex reasoning to collaboration modes without overrides", function()
+    local old_reasoning_effort = config.plugins.assistant.reasoning_effort
+    config.plugins.assistant.reasoning_effort = "low"
+    local agent = Codex()
+    agent.collaboration_modes_by_id = {
+      plan = { id = "plan", mode = "plan", label = "Plan" },
+      review = {
+        id = "review",
+        mode = "default",
+        label = "Review",
+        reasoning_effort = "medium"
+      }
+    }
+
+    local plan_mode = agent:build_collaboration_mode("plan")
+    local review_mode = agent:build_collaboration_mode("review")
+    config.plugins.assistant.reasoning_effort = old_reasoning_effort
+
+    test.equal(plan_mode.settings.reasoning_effort, "low")
+    test.equal(review_mode.settings.reasoning_effort, "medium")
+  end)
+
   test.it("parses codex app-server context usage", function()
     local agent = Codex()
     local usage = agent:parse_usage({

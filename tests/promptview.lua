@@ -270,6 +270,7 @@ test.describe("assistant prompt view", function()
 
   test.it("switches model from model dialog selection", function()
     local agent = Ollama()
+    agent.reasoning_effort = "low"
     local view = PromptView({
       agent = agent,
       conversation = Conversation(agent, "/tmp"),
@@ -283,10 +284,33 @@ test.describe("assistant prompt view", function()
     view:open_model_dialog()
     local dialog = view.model_dialog
     dialog.list:set_selected(2)
+    dialog.reasoning_select:set_selected(3)
     dialog:submit()
 
     test.equal(view.agent.model, "model-b")
+    test.equal(view.agent.reasoning_effort, "medium")
     test.equal(view.conversation.model, "model-b")
+    test.equal(view.conversation.reasoning_effort, "medium")
+  end)
+
+  test.it("shows reasoning effort next to model except none", function()
+    local old_reasoning_effort = config.plugins.assistant.reasoning_effort
+    config.plugins.assistant.reasoning_effort = "high"
+    local agent = Ollama({ model = "model-a" })
+    local view = PromptView({
+      agent = agent,
+      conversation = Conversation(agent, "/tmp")
+    })
+
+    view:refresh()
+    test.equal(view.status.label:find("model%-a %(high%)") ~= nil, true)
+
+    agent.reasoning_effort = "none"
+    view:refresh()
+    config.plugins.assistant.reasoning_effort = old_reasoning_effort
+
+    test.equal(view.status.label:find("model%-a %(none%)"), nil)
+    test.equal(view.status.label:find("model-a", 1, true) ~= nil, true)
   end)
 
   test.it("clears loading state after model list callback", function()

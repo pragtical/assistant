@@ -45,15 +45,18 @@ end
 
 test.describe("assistant ACP backend", function()
   local old_reasoning_activity_messages
+  local old_reasoning_effort
 
   test.before_each(function()
     old_reasoning_activity_messages = config.plugins.assistant.reasoning_activity_messages
+    old_reasoning_effort = config.plugins.assistant.reasoning_effort
     config.plugins.assistant.reasoning_activity_messages = true
   end)
 
   test.after_each(function()
     process = real_process
     config.plugins.assistant.reasoning_activity_messages = old_reasoning_activity_messages
+    config.plugins.assistant.reasoning_effort = old_reasoning_effort
   end)
 
   test.it("creates a session and streams ACP message chunks", function()
@@ -430,6 +433,55 @@ test.describe("assistant ACP backend", function()
     test.equal(writes:find('"method":"session/set_config_option"', 1, true) ~= nil, true)
     test.equal(writes:find('"configId":"model"', 1, true) ~= nil, true)
     test.equal(writes:find('"value":"b"', 1, true) ~= nil, true)
+  end)
+
+  test.it("sets ACP thought level before sending a prompt", function()
+    config.plugins.assistant.reasoning_effort = "low"
+    local proc = fake_proc({
+      '{"jsonrpc":"2.0","id":1,"result":{"agentCapabilities":{}}}\n',
+      '{"jsonrpc":"2.0","id":2,"result":{"sessionId":"session-1","configOptions":[{"id":"thinking","type":"select","category":"thought_level","currentValue":"medium","options":[{"name":"None","value":"none"},{"name":"Low","value":"low"},{"name":"Medium","value":"medium"},{"name":"High","value":"high"}]}]}}\n',
+      '{"jsonrpc":"2.0","id":3,"result":{"configOptions":[]}}\n',
+      '{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"session-1","update":{"type":"agent_message_chunk","text":"ok"}}}\n',
+      '{"jsonrpc":"2.0","id":4,"result":{}}\n'
+    })
+    install_process(proc)
+
+    local agent = Copilot()
+    local conversation = Conversation(agent, "project")
+    conversation:add("user", "hello", { autosave = false })
+    local backend = AcpBackend()
+
+    backend:send(agent, conversation, function() end)
+    coroutine.yield(0.4)
+
+    local writes = table.concat(proc.writes)
+    test.equal(writes:find('"method":"session/set_config_option"', 1, true) ~= nil, true)
+    test.equal(writes:find('"configId":"thinking"', 1, true) ~= nil, true)
+    test.equal(writes:find('"value":"low"', 1, true) ~= nil, true)
+    test.equal(writes:find('"method":"session/prompt"', 1, true) ~= nil, true)
+  end)
+
+  test.it("does not set ACP thought level when value or option is invalid", function()
+    config.plugins.assistant.reasoning_effort = "invalid"
+    local proc = fake_proc({
+      '{"jsonrpc":"2.0","id":1,"result":{"agentCapabilities":{}}}\n',
+      '{"jsonrpc":"2.0","id":2,"result":{"sessionId":"session-1","configOptions":[{"id":"thinking","type":"select","category":"thought_level","currentValue":"medium","options":[{"name":"None","value":"none"},{"name":"Low","value":"low"}]}]}}\n',
+      '{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"session-1","update":{"type":"agent_message_chunk","text":"ok"}}}\n',
+      '{"jsonrpc":"2.0","id":3,"result":{}}\n'
+    })
+    install_process(proc)
+
+    local agent = Copilot()
+    local conversation = Conversation(agent, "project")
+    conversation:add("user", "hello", { autosave = false })
+    local backend = AcpBackend()
+
+    backend:send(agent, conversation, function() end)
+    coroutine.yield(0.4)
+
+    local writes = table.concat(proc.writes)
+    test.equal(writes:find('"configId":"thinking"', 1, true), nil)
+    test.equal(writes:find('"method":"session/prompt"', 1, true) ~= nil, true)
   end)
 
   test.it("syncs ACP model and mode config updates into the conversation", function()

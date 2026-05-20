@@ -1206,6 +1206,8 @@ function AppServerBackend:send(agent, conversation, callback)
         }
         if conversation.collaboration_mode and conversation.collaboration_mode ~= "" then
           params.collaborationMode = agent:build_collaboration_mode(conversation.collaboration_mode)
+        elseif agent.configured_appserver_reasoning_effort then
+          params.effort = agent:configured_appserver_reasoning_effort()
         end
         turn_id = self:request("turn/start", params, agent, conversation)
         track_request(state, turn_id)

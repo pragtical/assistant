@@ -6,25 +6,36 @@ local Label = require "widget.label"
 local Line = require "widget.line"
 local ListBox = require "widget.listbox"
 local MessageBox = require "widget.messagebox"
+local SelectBox = require "widget.selectbox"
 local TextBox = require "widget.textbox"
 local Widget = require "widget"
+
+local REASONING_OPTIONS = {
+  { label = "None", value = "none" },
+  { label = "Low", value = "low" },
+  { label = "Medium", value = "medium" },
+  { label = "High", value = "high" }
+}
 
 ---Model selection dialog used by assistant conversation views.
 ---@class assistant.ui.ModelDialog : widget.dialog
 ---@field models string[]
 ---@field current_model string|nil
----@field on_submit fun(self: assistant.ui.ModelDialog, model: string)
+---@field current_reasoning_effort string|nil
+---@field on_submit fun(self: assistant.ui.ModelDialog, model: string, reasoning_effort: string)
 local ModelDialog = Dialog:extend()
 
 ---Create a new instance.
 ---@param models string[]
 ---@param current_model string|nil
-function ModelDialog:new(models, current_model)
+---@param current_reasoning_effort string|nil
+function ModelDialog:new(models, current_model, current_reasoning_effort)
   ModelDialog.super.new(self, "Assistant Model")
 
   self.type_name = "plugins.assistant.ui.ModelDialog"
   self.models = models or {}
   self.current_model = current_model
+  self.current_reasoning_effort = current_reasoning_effort
 
   self.model_label = Label(self.panel, "Model")
   self.filter_textbox = TextBox(self.panel, "", "filter models...")
@@ -37,6 +48,12 @@ function ModelDialog:new(models, current_model)
   self.list.border.width = 0
   self.list:enable_expand(true)
   self.list:add_column("Model")
+
+  self.reasoning_select = SelectBox(self.panel, "Reasoning")
+  for _, option in ipairs(REASONING_OPTIONS) do
+    self.reasoning_select:add_option(option.label, option.value)
+  end
+  self:select_reasoning_effort(current_reasoning_effort)
 
   self.line = Line(self.panel, 1, style.padding.x)
   self.ok = Button(self.panel, "OK")
@@ -77,6 +94,19 @@ function ModelDialog:new(models, current_model)
   end
 end
 
+---Select reasoning effort.
+---@param effort string|nil
+function ModelDialog:select_reasoning_effort(effort)
+  effort = effort or "none"
+  for idx, option in ipairs(REASONING_OPTIONS) do
+    if option.value == effort then
+      self.reasoning_select:set_selected(idx)
+      return
+    end
+  end
+  self.reasoning_select:set_selected(1)
+end
+
 ---Add model.
 ---@param model string
 function ModelDialog:add_model(model)
@@ -107,6 +137,12 @@ function ModelDialog:get_selected_model()
   return idx and self.list:get_row_data(idx) or nil
 end
 
+---Return the selected reasoning effort.
+---@return string
+function ModelDialog:get_selected_reasoning_effort()
+  return self.reasoning_select:get_selected_data() or "none"
+end
+
 ---Submit the current selection or prompt.
 function ModelDialog:submit()
   local model = self:get_selected_model()
@@ -114,13 +150,14 @@ function ModelDialog:submit()
     MessageBox.error("Assistant Model", "Select a model.")
     return
   end
-  self:on_submit(model)
+  self:on_submit(model, self:get_selected_reasoning_effort())
   self:on_close()
 end
 
 ---Handle on submit.
 ---@param model string
-function ModelDialog:on_submit(model) end
+---@param reasoning_effort string
+function ModelDialog:on_submit(model, reasoning_effort) end
 
 ---Handle on close.
 function ModelDialog:on_close()
@@ -148,9 +185,13 @@ function ModelDialog:update_size_position()
   self.list_container:set_position(padding, self.filter_textbox:get_bottom() + style.padding.y)
   self.list_container:set_size(
     width - style.padding.x,
-    math.max(120 * SCALE, self.line.position.y - self.list_container.position.y - style.padding.y)
+    math.max(120 * SCALE, self.line.position.y - self.list_container.position.y - style.padding.y * 2 - self.reasoning_select:get_height())
   )
   self.list:resize_to_parent()
+
+  self.reasoning_select:set_position(padding, self.list_container:get_bottom() + style.padding.y)
+  self.reasoning_select:set_size(width - style.padding.x)
+  self.reasoning_select:update_size_position()
 
   self.ok:set_position(padding, buttons_y)
   self.cancel:set_position(self.ok:get_right() + style.padding.x, buttons_y)
