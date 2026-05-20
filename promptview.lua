@@ -245,6 +245,10 @@ function PromptView:new(options)
   self.status = Label(self, "")
   self.mode_select = SelectBox(self, "Mode")
   self.activity = Label(self, "")
+  self.insert_file_button = Button(self)
+  configure_icon_button(self.insert_file_button, "D")
+  self.insert_project_file_button = Button(self)
+  configure_icon_button(self.insert_project_file_button, "L")
   self.send_button = Button(self)
   configure_icon_button(self.send_button, ">")
   self.model_button = Button(self)
@@ -290,6 +294,16 @@ function PromptView:new(options)
   end
 
   local buttons = {
+    {
+      widget = self.insert_file_button,
+      tooltip = "Insert file or directory",
+      command = "assistant-conversation:insert-file"
+    },
+    {
+      widget = self.insert_project_file_button,
+      tooltip = "Insert project file",
+      command = "assistant-conversation:insert-project-file"
+    },
     {
       widget = self.send_button,
       tooltip = "Send prompt",
@@ -1520,6 +1534,8 @@ function PromptView:update()
   local prompt_height = (config.plugins.assistant and config.plugins.assistant.prompt_height) or 140
   local activity_height = math.max(
     widget_height(self.activity),
+    widget_height(self.insert_file_button),
+    widget_height(self.insert_project_file_button),
     widget_height(self.send_button),
     widget_height(self.clear_button),
     style.padding.y * 2
@@ -1548,8 +1564,16 @@ function PromptView:update()
   local send_y = activity_y + math.max(0, (activity_height - widget_height(self.send_button)) / 2)
   self.send_button:set_position(send_x, send_y)
 
+  local project_file_x = send_x - button_gap - widget_width(self.insert_project_file_button)
+  local project_file_y = activity_y + math.max(0, (activity_height - widget_height(self.insert_project_file_button)) / 2)
+  self.insert_project_file_button:set_position(project_file_x, project_file_y)
+
+  local file_x = project_file_x - button_gap - widget_width(self.insert_file_button)
+  local file_y = activity_y + math.max(0, (activity_height - widget_height(self.insert_file_button)) / 2)
+  self.insert_file_button:set_position(file_x, file_y)
+
   self.activity:set_position(left, activity_y + math.max(0, (activity_height - widget_height(self.activity)) / 2))
-  self.activity:set_size(math.max(10, send_x - left - padding), widget_height(self.activity))
+  self.activity:set_size(math.max(10, file_x - left - padding), widget_height(self.activity))
 
   self.prompt.position.x = pos.x + left
   self.prompt.position.y = pos.y + prompt_y

@@ -511,6 +511,33 @@ function assistant.list_memories(project_dir)
   return view
 end
 
+---Return path relative to the active project when possible.
+---@param filename string
+---@return string
+local function prompt_file_path(filename)
+  local project = core.current_project(filename) or core.root_project()
+  local info = system.get_file_info(filename)
+  local is_dir = info and info.type == "dir"
+  local trailing_sep = is_dir and PATHSEP or ""
+  if project and common.path_belongs_to(filename, project.path) then
+    return common.relative_path(project.path, filename):gsub(PATHSEP .. "$", "") .. trailing_sep
+  end
+  return common.home_encode(filename):gsub(PATHSEP .. "$", "") .. trailing_sep
+end
+
+---Insert selected project file path into a conversation prompt.
+---@param view assistant.PromptView
+---@param filename string
+---@param line? integer
+local function insert_project_file_path(view, filename, line)
+  local text = prompt_file_path(filename)
+  if line then
+    text = string.format("%s:%d", text, line)
+  end
+  view.prompt_doc:text_input(text)
+  core.set_active_view(view.prompt)
+end
+
 ---Log the model list for an agent.
 ---@param agent_name string?
 function assistant.list_models(agent_name)
@@ -635,6 +662,16 @@ command.add(PromptView.active_predicate, {
   ["assistant-conversation:respond-to-request"] = function(view)
     view:respond_to_pending_request()
   end,
+  ["assistant-conversation:insert-file"] = function(view)
+    command.perform("core:open-file", "Insert File", function(filename)
+      insert_project_file_path(view, filename)
+    end, true)
+  end,
+  ["assistant-conversation:insert-project-file"] = function(view)
+    command.perform("core:find-file", "Insert Project File", function(filename, line)
+      insert_project_file_path(view, filename, line)
+    end)
+  end,
   ["assistant-conversation:rename"] = function(view)
     core.command_view:enter("Conversation Title", {
       submit = function(title)
@@ -659,6 +696,8 @@ keymap.add {
   ["escape"] = "assistant-conversation:cancel",
   ["ctrl+alt+enter"] = "assistant-conversation:respond-to-request",
   ["ctrl+alt+return"] = "assistant-conversation:respond-to-request",
+  ["ctrl+alt+u"] = "assistant-conversation:insert-file",
+  ["ctrl+shift+u"] = "assistant-conversation:insert-project-file",
   ["ctrl+backspace"] = "assistant-conversation:clear-prompt"
 }
 
