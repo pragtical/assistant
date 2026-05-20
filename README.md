@@ -31,10 +31,6 @@ Registered assistant tools currently include:
 - Git: `git_status`, `git_diff`
 - Interaction: `tool_catalog`, `time`, `update_plan`, `request_user_input`
 
-Legacy tool aliases were removed. Use the current names above, not
-`read_file`, `read_file_range`, `write_file_contents`, `run_terminal_command`,
-`list_files`, or `time_now`.
-
 For non-GPT implementation models, the plugin advertises `write` and `edit`.
 For models whose name contains `gpt`, it advertises `apply_patch` instead of
 `write` and `edit`.
@@ -48,7 +44,7 @@ before provider requests.
 
 Project-local state is stored under:
 
-```text
+```
 .pragtical/assistant/
 ```
 
@@ -130,3 +126,26 @@ Default keymaps:
 - `tool_router.lua`: mode-specific tool selection and permission routing
 - `backend/`: HTTP, CLI, app-server, and ACP backends
 - `agent/`: provider adapters
+- `tests/`: Pragtical test suite
+- `live_tests/`: manual/live provider conversation checks
+
+## Tests
+
+Run the full plugin test suite from this directory with:
+
+```sh
+SDL_VIDEO_DRIVER=dummy pragtical test tests
+```
+
+Focused suites used often during tool/backend work:
+
+```sh
+SDL_VIDEO_DRIVER=dummy pragtical test tests/tools.lua
+SDL_VIDEO_DRIVER=dummy pragtical test tests/agent.lua
+SDL_VIDEO_DRIVER=dummy pragtical test tests/backend_http.lua
+SDL_VIDEO_DRIVER=dummy pragtical test tests/backend_acp.lua
+SDL_VIDEO_DRIVER=dummy pragtical test tests/promptview.lua
+```
+
+Live conversation tests are intentionally provider-dependent. Also they should
+be ran without setting the SDL_VIDEO_DRIVER=dummy environment variable.
