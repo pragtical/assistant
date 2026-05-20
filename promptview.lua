@@ -1492,11 +1492,17 @@ function PromptView:update()
   self.mode_select:update_size_position()
 
   local button_gap = math.max(style.padding.x / 2, 6 * SCALE)
+  local mode_select_h = self.mode_select:is_visible() and widget_height(self.mode_select) or 0
+  if mode_select_h > 0 then
+    self.model_button:set_size(nil, mode_select_h)
+    self.cancel_button:set_size(nil, mode_select_h)
+    self.compact_button:set_size(nil, mode_select_h)
+  end
   local button_h = math.max(
     widget_height(self.model_button),
     widget_height(self.cancel_button),
     self.compact_button:is_visible() and widget_height(self.compact_button) or 0,
-    self.mode_select:is_visible() and widget_height(self.mode_select) or 0
+    mode_select_h
   )
   local title_h = widget_height(self.title)
   local toolbar_h = math.max(button_h, title_h)
