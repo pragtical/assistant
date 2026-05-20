@@ -1,0 +1,635 @@
+-- mod-version: 3.10
+local core = require "core"
+local common = require "core.common"
+local command = require "core.command"
+local config = require "core.config"
+local keymap = require "core.keymap"
+
+local Conversation = require "plugins.assistant.conversation"
+local PromptView = require "plugins.assistant.promptview"
+local tools = require "plugins.assistant.tools"
+local ConversationsList = require "plugins.assistant.ui.conversationslist"
+local HttpBackend = require "plugins.assistant.backend.http"
+local CliBackend = require "plugins.assistant.backend.cli"
+local AppServerBackend = require "plugins.assistant.backend.appserver"
+local AcpBackend = require "plugins.assistant.backend.acp"
+local Ollama = require "plugins.assistant.agent.ollama"
+local LlamaCpp = require "plugins.assistant.agent.llamacpp"
+local Lms = require "plugins.assistant.agent.lms"
+local OpenAI = require "plugins.assistant.agent.openai"
+local Codex = require "plugins.assistant.agent.codex"
+local Acp = require "plugins.assistant.agent.acp"
+local Copilot = require "plugins.assistant.agent.copilot"
+
+config.plugins.assistant = common.merge({
+  agent = "ollama",
+  backend = "http",
+  model = "",
+  base_url = "",
+  api_key = "",
+  api_key_env = "",
+  codex_command = "",
+  acp_command = "",
+  acp_transport = "stdio",
+  acp_host = "127.0.0.1",
+  acp_port = 0,
+  copilot_command = "",
+  keep_alive = "-1",
+  debug = false,
+  log_protocol = false,
+  log_raw_messages = true,
+  verbose_tool_calling = false,
+  reasoning_activity_messages = true,
+  compact_tool_results = true,
+  compact_tool_history = true,
+  generate_conversation_titles = true,
+  stream = true,
+  request_timeout_ms = 1800000,
+  max_tool_call_rounds = 0,
+  send_max_tokens = false,
+  send_max_tokens_amount = 65536,
+  reasoning_effort = "low",
+  fetch_model_metadata = true,
+  auto_compact = true,
+  auto_compact_threshold = 0.85,
+  auto_compact_min_new_messages = 4,
+  auto_save = true,
+  prompt_height = 140,
+  confirm_writes = true,
+  allow_any_read_path = false,
+  web_search_url = "",
+  web_search_query_param = "q",
+  web_search_results_path = "",
+  web_timeout_ms = 10000,
+  web_allow_hosts = {},
+  config_spec = {
+    name = "Assistant",
+    {
+      label = "Agent",
+      description = "Default assistant provider.",
+      path = "agent",
+      type = "selection",
+      default = "ollama",
+      values = {
+        { "Ollama", "ollama" },
+        { "llama.cpp", "llamacpp" },
+        { "LM Studio", "lms" },
+        { "OpenAI", "openai" },
+        { "Codex", "codex" },
+        { "ACP", "acp" },
+        { "GitHub Copilot", "copilot" }
+      }
+    },
+    {
+      label = "Model",
+      description = "Model name sent to the provider. Leave empty for provider default.",
+      path = "model",
+      type = "string",
+      default = ""
+    },
+    {
+      label = "Base URL",
+      description = "Provider base URL. Leave empty for provider default.",
+      path = "base_url",
+      type = "string",
+      default = ""
+    },
+    {
+      label = "API Key",
+      description = "Provider API key. Leave empty to use the environment variable instead.",
+      path = "api_key",
+      type = "string",
+      default = ""
+    },
+    {
+      label = "API key environment variable",
+      description = "Environment variable containing the API key, if needed.",
+      path = "api_key_env",
+      type = "string",
+      default = ""
+    },
+    {
+      label = "Codex Command",
+      description = "Path to the codex executable. Leave empty to search PATH and common user bin directories.",
+      path = "codex_command",
+      type = "string",
+      default = ""
+    },
+    {
+      label = "ACP Command",
+      description = "Command for generic ACP agents. Presets may ignore this.",
+      path = "acp_command",
+      type = "string",
+      default = ""
+    },
+    {
+      label = "ACP Transport",
+      description = "Transport for generic ACP agents.",
+      path = "acp_transport",
+      type = "selection",
+      default = "stdio",
+      values = {
+        { "stdio", "stdio" },
+        { "tcp", "tcp" }
+      }
+    },
+    {
+      label = "ACP Host",
+      description = "Host for TCP ACP agents.",
+      path = "acp_host",
+      type = "string",
+      default = "127.0.0.1"
+    },
+    {
+      label = "ACP Port",
+      description = "Port for TCP ACP agents.",
+      path = "acp_port",
+      type = "number",
+      default = 0
+    },
+    {
+      label = "Copilot Command",
+      description = "Path to the GitHub Copilot executable. Leave empty to use `copilot --acp --stdio`.",
+      path = "copilot_command",
+      type = "string",
+      default = ""
+    },
+    {
+      label = "Keep Alive",
+      description = "Only applies to agents that support keep-alive. Controls how long capable providers keep models loaded after requests. Use -1 to keep loaded indefinitely, 0 to unload immediately, or durations like 30s, 1m, 30m, 1h.",
+      path = "keep_alive",
+      type = "string",
+      default = "-1"
+    },
+    {
+      label = "Stream Responses",
+      description = "Use Server-Sent Events streaming when supported.",
+      path = "stream",
+      type = "toggle",
+      default = true
+    },
+    {
+      label = "Allow Any Read Path",
+      description = "Allow read-only assistant tools to read outside loaded project roots without asking. Writes, patches, deletes, and commands remain project-root restricted.",
+      path = "allow_any_read_path",
+      type = "toggle",
+      default = false
+    },
+    {
+      label = "Web Search URL",
+      description = "Optional HTTP endpoint used by the assistant web_search tool. Leave empty to disable web_search.",
+      path = "web_search_url",
+      type = "string",
+      default = ""
+    },
+    {
+      label = "Web Search Query Parameter",
+      description = "Query parameter name used when calling the configured web search endpoint.",
+      path = "web_search_query_param",
+      type = "string",
+      default = "q"
+    },
+    {
+      label = "Request Timeout",
+      description = "Timeout in milliseconds for assistant provider chat requests.",
+      path = "request_timeout_ms",
+      type = "number",
+      default = 1800000
+    },
+    {
+      label = "Max Tool Call Rounds",
+      description = "Maximum model/tool continuation rounds allowed for a single assistant turn. Set to 0 to rely on manual cancellation instead of a round cap.",
+      path = "max_tool_call_rounds",
+      type = "number",
+      default = 0,
+      min = 0,
+      max = 512
+    },
+    {
+      label = "Send Max Tokens",
+      description = "Send a max_tokens limit with OpenAI-compatible chat requests. Disabled by default so providers use their own output limits.",
+      path = "send_max_tokens",
+      type = "toggle",
+      default = false
+    },
+    {
+      label = "Max Tokens Amount",
+      description = "The max_tokens value to send when Send Max Tokens is enabled.",
+      path = "send_max_tokens_amount",
+      type = "number",
+      default = 65536,
+      min = 1
+    },
+    {
+      label = "Compact Tool Results",
+      description = "Compact tool results before sending them back to HTTP/OpenAI-compatible models.",
+      path = "compact_tool_results",
+      type = "toggle",
+      default = true
+    },
+    {
+      label = "Compact Tool History",
+      description = "Compact historical tool call/result messages before provider requests.",
+      path = "compact_tool_history",
+      type = "toggle",
+      default = true
+    },
+    {
+      label = "Reasoning Effort",
+      description = "Reasoning effort sent to OpenAI Responses and supported OpenAI-compatible chat providers.",
+      path = "reasoning_effort",
+      type = "selection",
+      default = "low",
+      values = {
+        { "None", "none" },
+        { "Low", "low" },
+        { "Medium", "medium" },
+        { "High", "high" }
+      }
+    },
+    {
+      label = "Auto Compact",
+      description = "Automatically compact local HTTP conversations before sending when reported context usage is near the model window.",
+      path = "auto_compact",
+      type = "toggle",
+      default = true
+    },
+    {
+      label = "Auto Compact Threshold",
+      description = "Fraction of the model context window used before automatic local compaction runs.",
+      path = "auto_compact_threshold",
+      type = "number",
+      default = 0.85,
+      min = 0.5,
+      max = 0.98
+    },
+    {
+      label = "Web Timeout",
+      description = "Timeout in milliseconds for assistant web tools.",
+      path = "web_timeout_ms",
+      type = "number",
+      default = 10000,
+      min = 1000,
+      max = 60000
+    },
+    {
+      label = "Debug Logging",
+      description = "Log general assistant backend diagnostics for troubleshooting.",
+      path = "debug",
+      type = "toggle",
+      default = false
+    },
+    {
+      label = "Raw Message Logging",
+      description = "Record per-conversation raw client requests and provider responses for View Raw Responses. Disable to reduce memory and disk usage.",
+      path = "log_raw_messages",
+      type = "toggle",
+      default = true
+    },
+    {
+      label = "Verbose Tool Calling",
+      description = "Show full tool call and tool result sections in conversation transcripts.",
+      path = "verbose_tool_calling",
+      type = "toggle",
+      default = false
+    },
+    {
+      label = "Reasoning Activity Messages",
+      description = "Show streamed reasoning and thought text as activity messages in conversation transcripts.",
+      path = "reasoning_activity_messages",
+      type = "toggle",
+      default = true
+    },
+    {
+      label = "Generate Conversation Titles",
+      description = "Generate a concise title from the first user prompt without adding the title request to conversation context.",
+      path = "generate_conversation_titles",
+      type = "toggle",
+      default = true
+    },
+    {
+      label = "Protocol Logging",
+      description = "Log raw assistant backend requests and responses for troubleshooting.",
+      path = "log_protocol",
+      type = "toggle",
+      default = false
+    },
+    {
+      label = "Prompt Height",
+      description = "Height in pixels for the prompt editor.",
+      path = "prompt_height",
+      type = "number",
+      default = 140,
+      min = 80,
+      max = 500
+    }
+  }
+}, config.plugins.assistant)
+
+---Assistant plugin module.
+---@class assistant
+---@field agents table<string, table>
+---@field backends table<string, table>
+local assistant = {
+  agents = {},
+  backends = {}
+}
+
+---Register an assistant agent class.
+---@param name string
+---@param agent table
+function assistant.register_agent(name, agent)
+  assistant.agents[name] = agent
+end
+
+---Remove a registered assistant agent class.
+---@param name string
+function assistant.unregister_agent(name)
+  assistant.agents[name] = nil
+end
+
+---Return an agent class by name or the configured default.
+---@param name string?
+---@return table?
+function assistant.get_agent(name)
+  return assistant.agents[name or config.plugins.assistant.agent]
+end
+
+---Register a communication backend class.
+---@param name string
+---@param backend table
+function assistant.register_backend(name, backend)
+  assistant.backends[name] = backend
+end
+
+---Return a backend class by name or the configured default.
+---@param name string?
+---@return table?
+function assistant.get_backend(name)
+  return assistant.backends[name or config.plugins.assistant.backend]
+end
+
+---Handle configured agent.
+---@param name string?
+---@return assistant.Agent
+local function configured_agent(name)
+  local cls = assistant.get_agent(name)
+  local agent = cls and cls() or Ollama()
+  local conf = config.plugins.assistant
+  agent:configure(conf)
+  return tools.register_agent_tools(agent)
+end
+
+---Handle configured backend.
+---@param name string?
+---@return assistant.Backend
+local function configured_backend(name)
+  local cls = assistant.get_backend(name)
+  return cls and cls() or HttpBackend()
+end
+
+---Open prompt view.
+---@param view assistant.PromptView
+---@return assistant.PromptView
+local function open_prompt_view(view)
+  local node = core.root_view:get_active_node_default()
+  node:add_view(view)
+  core.root_view.root_node:update_layout()
+  return view
+end
+
+---Open a new assistant conversation view.
+---@param agent_name string?
+---@return assistant.PromptView
+function assistant.start_conversation(agent_name)
+  local agent = configured_agent(agent_name)
+  local backend = configured_backend(agent.backend)
+  return open_prompt_view(PromptView({ agent = agent, backend = backend }))
+end
+
+---Open a saved assistant conversation.
+---@param id string
+---@param project_dir string?
+---@return assistant.PromptView?
+function assistant.resume_conversation(id, project_dir)
+  local conversation = Conversation.load(id, project_dir or core.root_project().path)
+  if not conversation then
+    core.error("Assistant: could not load conversation %s", tostring(id))
+    return
+  end
+  local agent = configured_agent(conversation.agent)
+  agent.model = conversation.model or agent.model
+  conversation.backend = agent.backend
+  return open_prompt_view(PromptView({
+    conversation = conversation,
+    agent = agent,
+    backend = configured_backend(agent.backend)
+  }))
+end
+
+---Open a conversation list item.
+---@param item table
+---@param project_dir string?
+---@return assistant.PromptView?
+function assistant.open_conversation_item(item, project_dir)
+  return assistant.resume_conversation(item.id, project_dir)
+end
+
+---Persist a conversation to disk.
+---@param conversation assistant.Conversation?
+---@return boolean?
+function assistant.save_conversation(conversation)
+  return conversation and conversation:save()
+end
+
+---Delete a saved conversation from disk.
+---@param id string
+---@param project_dir string?
+---@param callback fun(deleted: boolean)?
+---@return boolean deleted
+function assistant.delete_conversation(id, project_dir, callback)
+  project_dir = project_dir or core.root_project().path
+  local deleted = Conversation.delete(id, project_dir)
+  if deleted then
+    core.log("Assistant: deleted conversation %s", id)
+  else
+    core.warn("Assistant: conversation not found: %s", id)
+  end
+  if callback then callback(deleted) end
+  return deleted
+end
+
+---Open the saved conversation list.
+---@param project_dir string?
+---@return assistant.ui.ConversationsList
+function assistant.list_conversations(project_dir)
+  project_dir = project_dir or core.root_project().path
+  local view = ConversationsList(project_dir, function(item)
+    assistant.open_conversation_item(item, project_dir)
+  end, function(item, delete_project_dir, callback)
+    assistant.delete_conversation(item.id, delete_project_dir, callback)
+  end)
+  local node = core.root_view:get_active_node_default()
+  node:add_view(view)
+  core.root_view.root_node:update_layout()
+  return view
+end
+
+---Log the model list for an agent.
+---@param agent_name string?
+function assistant.list_models(agent_name)
+  local agent = configured_agent(agent_name)
+  local backend = configured_backend(agent.backend)
+  backend:list_models(agent, function(ok, err, models)
+    if not ok then
+      core.error("Assistant: could not list models: %s", err or "unknown error")
+      return
+    end
+    if not models or #models == 0 then
+      core.log("Assistant: no models reported by %s", agent.display_name or agent.name)
+      return
+    end
+    core.log("Assistant models from %s:", agent.display_name or agent.name)
+    for _, model in ipairs(models) do
+      core.log("  %s", model)
+    end
+  end)
+end
+
+assistant.register_agent("ollama", Ollama)
+assistant.register_agent("llamacpp", LlamaCpp)
+assistant.register_agent("lms", Lms)
+assistant.register_agent("openai", OpenAI)
+assistant.register_agent("codex", Codex)
+assistant.register_agent("acp", Acp)
+assistant.register_agent("copilot", Copilot)
+assistant.register_backend("http", HttpBackend)
+assistant.register_backend("cli", CliBackend)
+assistant.register_backend("appserver", AppServerBackend)
+assistant.register_backend("acp", AcpBackend)
+
+command.add(nil, {
+  ["assistant:new-conversation"] = function()
+    assistant.start_conversation()
+  end,
+
+  ["assistant:list-conversations"] = function()
+    assistant.list_conversations()
+  end,
+
+  ["assistant:list-models"] = function()
+    assistant.list_models()
+  end,
+
+  ["assistant:resume-conversation"] = function()
+    core.command_view:enter("Assistant Session ID", {
+      submit = function(id)
+        assistant.resume_conversation(id)
+      end
+    })
+  end,
+
+  ["assistant:delete-conversation"] = function()
+    core.command_view:enter("Delete Assistant Session ID", {
+      submit = function(id)
+        assistant.delete_conversation(id, core.root_project().path)
+      end
+    })
+  end,
+
+  ["assistant:add-memory"] = function()
+    core.command_view:enter("Assistant Memory", {
+      submit = function(text)
+        local item = Conversation.add_memory(core.root_project().path, "Memory", text)
+        if item then
+          core.log("Assistant: added memory %s", item.id)
+        end
+      end
+    })
+  end,
+
+  ["assistant:list-memories"] = function()
+    local memories = Conversation.list_memories(core.root_project().path)
+    if #memories == 0 then
+      core.log("Assistant: no memories for this project.")
+    end
+    for _, item in ipairs(memories) do
+      core.log("Assistant memory %s - %s", item.id, item.title or "Memory")
+    end
+  end,
+
+  ["assistant:delete-memory"] = function()
+    core.command_view:enter("Delete Assistant Memory ID", {
+      submit = function(id)
+        if Conversation.delete_memory(core.root_project().path, id) then
+          core.log("Assistant: deleted memory %s", id)
+        else
+          core.warn("Assistant: memory not found: %s", id)
+        end
+      end
+    })
+  end
+})
+
+command.add(PromptView.active_predicate, {
+  ["assistant-conversation:send"] = function(view)
+    view:submit()
+  end
+})
+
+command.add(PromptView.active_predicate, {
+  ["assistant-conversation:select-model"] = function(view)
+    view:open_model_dialog()
+  end,
+  ["assistant-conversation:cancel"] = function(view)
+    view:cancel()
+  end,
+  ["assistant-conversation:save"] = function(view)
+    view:save_conversation()
+  end,
+  ["assistant-conversation:view-raw-responses"] = function(view)
+    view:view_raw_responses()
+  end,
+  ["assistant-conversation:view-raw-markdown"] = function(view)
+    view:view_raw_markdown()
+  end,
+  ["assistant-conversation:view-rendered-markdown"] = function(view)
+    view:view_rendered_markdown()
+  end,
+  ["assistant-conversation:clear-prompt"] = function(view)
+    view:clear_prompt()
+  end,
+  ["assistant-conversation:cycle-mode"] = function(view)
+    view:cycle_collaboration_mode()
+  end,
+  ["assistant-conversation:respond-to-request"] = function(view)
+    view:respond_to_pending_request()
+  end,
+  ["assistant-conversation:rename"] = function(view)
+    core.command_view:enter("Conversation Title", {
+      submit = function(title)
+        view:rename_conversation(title)
+      end
+    })
+  end
+})
+
+command.add(PromptView.compact_predicate, {
+  ["assistant-conversation:compact"] = function(view)
+    view:compact()
+  end
+})
+
+keymap.add {
+  ["ctrl+alt+a"] = "assistant:new-conversation",
+  ["ctrl+enter"] = "assistant-conversation:send",
+  ["ctrl+return"] = "assistant-conversation:send",
+  ["ctrl+m"] = "assistant-conversation:select-model",
+  ["shift+tab"] = "assistant-conversation:cycle-mode",
+  ["escape"] = "assistant-conversation:cancel",
+  ["ctrl+alt+enter"] = "assistant-conversation:respond-to-request",
+  ["ctrl+alt+return"] = "assistant-conversation:respond-to-request",
+  ["ctrl+backspace"] = "assistant-conversation:clear-prompt"
+}
+
+return assistant
