@@ -58,7 +58,7 @@ config.plugins.assistant = common.merge({
   prompt_height = 140,
   confirm_writes = true,
   allow_any_read_path = false,
-  web_search_url = "",
+  web_search_url = "https://search.brave.com/search",
   web_search_query_param = "q",
   web_search_results_path = "",
   web_timeout_ms = 10000,
@@ -178,10 +178,10 @@ config.plugins.assistant = common.merge({
     },
     {
       label = "Web Search URL",
-      description = "Optional HTTP endpoint used by the assistant web_search tool. Leave empty to disable web_search.",
+      description = "Optional search page or JSON endpoint used by the assistant web_search tool. Leave empty to disable web_search.",
       path = "web_search_url",
       type = "string",
-      default = ""
+      default = "https://search.brave.com/search"
     },
     {
       label = "Web Search Query Parameter",

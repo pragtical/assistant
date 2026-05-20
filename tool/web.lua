@@ -81,7 +81,104 @@ function webtools.web_fetch(url, method, headers, body, timeout_ms)
   )
 end
 
----Run a search through the configured JSON search endpoint.
+---Decode a small subset of HTML entities commonly found in search pages.
+---@param text string
+---@return string
+local function html_unescape(text)
+  local named = {
+    amp = "&",
+    apos = "'",
+    gt = ">",
+    lt = "<",
+    nbsp = " ",
+    quot = '"'
+  }
+  return tostring(text or "")
+    :gsub("&#x([%da-fA-F]+);", function(hex)
+      local value = tonumber(hex, 16)
+      return value and value < 256 and string.char(value) or ""
+    end)
+    :gsub("&#(%d+);", function(decimal)
+      local value = tonumber(decimal)
+      return value and value < 256 and string.char(value) or ""
+    end)
+    :gsub("&([%a]+);", function(name)
+      return named[name] or "&" .. name .. ";"
+    end)
+end
+
+---Remove HTML tags and normalize whitespace.
+---@param text string
+---@return string
+local function html_text(text)
+  text = tostring(text or "")
+    :gsub("<script.-</script>", " ")
+    :gsub("<style.-</style>", " ")
+    :gsub("<[^>]+>", " ")
+  text = html_unescape(text):gsub("%s+", " "):gsub("^%s+", ""):gsub("%s+$", "")
+  return text
+end
+
+---Decode percent-escaped URL text.
+---@param text string
+---@return string
+local function urldecode(text)
+  return tostring(text or ""):gsub("%%(%x%x)", function(hex)
+    return string.char(tonumber(hex, 16))
+  end)
+end
+
+---Return the value of a query parameter from a URL.
+---@param url string
+---@param name string
+---@return string|nil
+local function url_param(url, name)
+  local escaped = name:gsub("([^%w])", "%%%1")
+  local value = tostring(url or ""):match("[?&]" .. escaped .. "=([^&#]+)")
+  if not value then return nil end
+  return urldecode((value:gsub("+", " ")))
+end
+
+---Extract a useful destination URL from a search-result href.
+---@param href string
+---@return string|nil
+local function search_result_url(href)
+  href = html_unescape(href or "")
+  if href == "" or href:match("^#") or href:match("^javascript:") or href:match("^mailto:") then
+    return nil
+  end
+  local uddg = url_param(href, "uddg")
+  if uddg then return uddg end
+  local google = url_param(href, "q")
+  if google and google:match("^https?://") then return google end
+  if href:match("^//") then return "https:" .. href end
+  if href:match("^https?://") then return href end
+end
+
+---Extract readable results from a generic HTML search page.
+---@param body string
+---@param limit number?
+---@return string|nil output
+local function extract_html_search_results(body, limit)
+  local rows = {}
+  local seen = {}
+  local max = tonumber(limit) or 10
+  for attrs, label in tostring(body or ""):gmatch("<a%s+([^>]-href%s*=%s*['\"][^'\"]+['\"][^>]*)>(.-)</a>") do
+    local href = attrs:match("href%s*=%s*['\"]([^'\"]+)['\"]")
+    local url = search_result_url(href)
+    local title = html_text(label)
+    if url and title ~= "" and not seen[url] then
+      seen[url] = true
+      table.insert(rows, title .. "\n" .. url)
+      if #rows >= max then break end
+    end
+    if #rows % 25 == 0 then context.yield_ui() end
+  end
+  if #rows == 0 then return nil end
+  return table.concat(rows, "\n\n")
+end
+
+---Run a search through the configured search page or JSON endpoint.
 ---@param query string
 ---@param limit number?
 ---@param timeout_ms number?
@@ -119,12 +216,14 @@ function webtools.web_search(query, limit, timeout_ms)
     end
     output = table.concat(rows, "\n\n")
   elseif context.looks_like_html(body) then
-    output = table.concat({
-      "Web search endpoint returned an HTML page, not structured search results.",
-      "Configure `plugins.assistant.web_search_url` to a JSON search endpoint and set `plugins.assistant.web_search_results_path`, or fetch a specific URL with `web_fetch`.",
-      "Fetched URL: " .. tostring(result.url or request_url),
-      "Response bytes: " .. tostring(#body)
-    }, "\n")
+    output = extract_html_search_results(body, limit)
+      or table.concat({
+        "No search results could be extracted from the HTML page. Raw HTML follows.",
+        "Fetched URL: " .. tostring(result.url or request_url),
+        "Response bytes: " .. tostring(#body),
+        "",
+        body
+      }, "\n")
   else
     output = body
   end
@@ -180,7 +279,7 @@ webtools.tools = {
     name = "web_search",
     callback = webtools.web_search,
     compact_result = compact("web search"),
-    description = "Search the web using the configured assistant web search endpoint.",
+    description = "Search the web using the configured assistant web search page or JSON endpoint.",
     read_only = true,
     requires_approval = context.web_request_requires_approval,
     params = {

@@ -38,6 +38,9 @@ local IMPLEMENTATION_TOOL_NAMES = {
   interrupt_exec = true,
   send_eof = true,
   update_plan = true,
+  web_fetch = true,
+  web_find = true,
+  web_search = true,
   write = true,
   write_stdin = true
 }

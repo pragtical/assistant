@@ -862,13 +862,19 @@ Here is the patch:
     test.equal(result:find("Two", 1, true) == nil, true)
   end)
 
-  test.it("does not return raw html from configured web search endpoints", function()
+  test.it("extracts results from configured html search pages", function()
     config.plugins.assistant.web_search_url = "https://search.example/html"
     config.plugins.assistant.web_search_query_param = "q"
     config.plugins.assistant.web_search_results_path = "results"
     config.plugins.assistant.web_allow_hosts = { "search.example" }
     http.request = function(_, url, options)
-      options.on_done(true, nil, "<!doctype html><html><head><title>Search</title></head><body>raw results page</body></html>", {
+      options.on_done(true, nil, table.concat({
+        "<!doctype html><html><head><title>Search</title></head><body>",
+        "<a href=\"/url?q=https%3A%2F%2Fone.example%2Fdocs&amp;sa=U\"><h3>One &amp; Docs</h3></a>",
+        "<a href=\"https://duckduckgo.com/l/?uddg=https%3A%2F%2Ftwo.example%2Fguide\">Two Guide</a>",
+        "<a href=\"#top\">Skip</a>",
+        "</body></html>"
+      }), {
         status = 200,
         headers = { ["content-type"] = "text/html" },
         url = url
@@ -878,8 +884,30 @@ Here is the patch:
     local ok, result = tools.web_search("hello world", 1)
 
     test.equal(ok, true)
-    test.equal(result:find("returned an HTML page", 1, true) ~= nil, true)
+    test.equal(result:find("One & Docs", 1, true) ~= nil, true)
+    test.equal(result:find("https://one.example/docs", 1, true) ~= nil, true)
+    test.equal(result:find("Two Guide", 1, true) == nil, true)
     test.equal(result:find("<!doctype html>", 1, true), nil)
+  end)
+
+  test.it("returns raw html when search result extraction fails", function()
+    config.plugins.assistant.web_search_url = "https://search.example/html"
+    config.plugins.assistant.web_search_query_param = "q"
+    config.plugins.assistant.web_allow_hosts = { "search.example" }
+    http.request = function(_, url, options)
+      options.on_done(true, nil, "<!doctype html><html><body><p>raw results page</p></body></html>", {
+        status = 200,
+        headers = { ["content-type"] = "text/html" },
+        url = url
+      })
+    end
+
+    local ok, result = tools.web_search("hello world", 1)
+
+    test.equal(ok, true)
+    test.equal(result:find("Raw HTML follows", 1, true) ~= nil, true)
+    test.equal(result:find("<!doctype html>", 1, true) ~= nil, true)
+    test.equal(result:find("raw results page", 1, true) ~= nil, true)
   end)
 
   test.it("finds text in fetched web bodies", function()
