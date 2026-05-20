@@ -260,14 +260,14 @@ test.describe("assistant tools", function()
   test.it("limits large recursive file listings by output size", function()
     local long_dir = root .. PATHSEP .. "deep"
     mkdirp(long_dir)
-    for i = 1, 300 do
+    for i = 1, 2200 do
       write(long_dir .. PATHSEP .. string.format("very-long-generated-file-name-%03d.txt", i), "x\n")
     end
 
-    local results = tools.list(root, true, 1000)
+    local results = tools.list(root, true, 5000)
 
     test.equal(results:find("stopped after reaching", 1, true) ~= nil, true)
-    test.equal(#results < 22000, true)
+    test.equal(#results < 135000, true)
   end)
 
   test.it("asks before read-only tools access outside project roots", function()

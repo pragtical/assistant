@@ -252,12 +252,14 @@ end
 ---Handle tool result provider message.
 ---@param call table
 ---@param result any
+---@param options table|nil
 ---@return table
-function OpenAI:tool_result_provider_message(call, result)
+function OpenAI:tool_result_provider_message(call, result, options)
+  local compact = not (options and options.compact == false)
   return {
     type = "function_call_output",
     call_id = call.call_id or call.id,
-    output = self:compact_tool_result(call, result)
+    output = compact and self:compact_tool_result(call, result) or self:tool_result_text(result)
   }
 end
 

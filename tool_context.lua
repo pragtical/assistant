@@ -13,7 +13,7 @@ local permission = require "plugins.assistant.permission"
 ---@class assistant.tool_context
 local context = {}
 
-context.OUTPUT_LIMIT = 20000
+context.OUTPUT_LIMIT = 128 * 1024
 context.FILE_CHUNK_SIZE = 64 * 1024
 context.OMITTED_TOOL_ARGUMENT_PATTERN = "^%[omitted %d+ bytes from prior tool argument `[^`]+`%]$"
 

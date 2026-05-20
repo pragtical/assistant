@@ -1378,6 +1378,84 @@ test.describe("assistant http backend", function()
     test.equal(second_body.messages[#second_body.messages].role, "tool")
   end)
 
+  test.it("sends fresh tool results un-compacted and compacts them after final response", function()
+    local restore_background_threads = run_background_threads_immediately()
+    local old_post = http.post
+    local calls = 0
+    local second_body
+    local large_result = string.rep("0123456789", 7000)
+    http.post = function(_, _, _, options)
+      calls = calls + 1
+      if calls == 1 then
+        options.on_done(true, nil, {
+          choices = {
+            {
+              message = {
+                content = "",
+                tool_calls = {
+                  {
+                    id = "call_large",
+                    type = "function",
+                    ["function"] = {
+                      name = "read",
+                      arguments = json.encode({ path = "large.txt" })
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }, { status = 200 })
+      else
+        second_body = json.decode(options.body)
+        options.on_done(true, nil, {
+          choices = {
+            { message = { content = "done" } }
+          }
+        }, { status = 200 })
+      end
+    end
+
+    local agent = Ollama({ stream = false })
+    agent:register_tool("read", {
+      callback = function()
+        return large_result
+      end,
+      compact_result = function()
+        return "compacted large read"
+      end,
+      read_only = true,
+      params = {
+        { name = "path", type = "string" }
+      }
+    })
+    local conversation = Conversation(agent, "project")
+    local backend = HttpBackend()
+    local response
+
+    backend:send(agent, conversation, function(ok, _, text, meta)
+      if ok and meta and meta.done then response = text end
+    end)
+
+    http.post = old_post
+    restore_background_threads()
+    local fresh_tool_message = second_body.messages[#second_body.messages]
+    local stored_tool_message
+    for _, message in ipairs(conversation.messages) do
+      if message.role == "tool_result" then
+        stored_tool_message = message
+        break
+      end
+    end
+
+    test.equal(response, "done")
+    test.equal(fresh_tool_message.role, "tool")
+    test.equal(fresh_tool_message.content:find(large_result:sub(1, 100), 1, true) ~= nil, true)
+    test.equal(fresh_tool_message.content:find("compacted large read", 1, true), nil)
+    test.equal(stored_tool_message.meta.provider_messages[1].content:find("compacted large read", 1, true) ~= nil, true)
+    test.equal(stored_tool_message.meta.deferred_tool_result, nil)
+  end)
+
   test.it("recovers streamed string tool arguments with decoded control characters", function()
     local restore_background_threads = run_background_threads_immediately()
     local old_request = http.request

@@ -384,16 +384,41 @@ end
 ---Add tool result.
 local function add_tool_result(agent, conversation, call, result, status)
   local provider_messages = agent.tool_result_provider_messages
-    and agent:tool_result_provider_messages(call, result)
-    or { agent:tool_result_provider_message(call, result) }
+    and agent:tool_result_provider_messages(call, result, { compact = false })
+    or { agent:tool_result_provider_message(call, result, { compact = false }) }
+  local should_defer_compaction = status == "ok"
   conversation:add("tool_result", agent:tool_result_display(call, result, status), {
     meta = {
       call = call,
       status = status,
       provider_message = provider_messages[1],
-      provider_messages = provider_messages
+      provider_messages = provider_messages,
+      deferred_tool_result_compaction = should_defer_compaction or nil,
+      deferred_tool_result = should_defer_compaction and result or nil
     }
   })
+end
+
+---Compact completed fresh tool results after the model has consumed them.
+local function compact_deferred_tool_results(agent, conversation)
+  if not (conversation and conversation.messages) then return end
+  for _, message in ipairs(conversation.messages) do
+    local meta = message.meta
+    if meta and meta.deferred_tool_result_compaction then
+      local call = meta.call
+      local result = meta.deferred_tool_result
+      local provider_messages = agent.tool_result_provider_messages
+        and agent:tool_result_provider_messages(call, result, {
+          compact = true,
+          include_images = false
+        })
+        or { agent:tool_result_provider_message(call, result, { compact = true }) }
+      meta.provider_message = provider_messages[1]
+      meta.provider_messages = provider_messages
+      meta.deferred_tool_result_compaction = nil
+      meta.deferred_tool_result = nil
+    end
+  end
 end
 
 ---Add activity.
@@ -1106,6 +1131,12 @@ function HttpBackend:send(agent, conversation, callback)
   local last_tool_call_signature
   local consecutive_tool_call_count = 0
 
+  ---Compact deferred tool results after a model continuation has completed.
+  local function compact_after_done()
+    compact_deferred_tool_results(agent, conversation)
+    if conversation and conversation.save then conversation:save() end
+  end
+
   ---Handle fail.
   local function fail(err, info, result)
     self.pending_tool_call = nil
@@ -1128,6 +1159,7 @@ function HttpBackend:send(agent, conversation, callback)
       text = sanitize_plan_response(text)
     end
     callback(true, nil, text or "", { done = true, info = info, usage = final_usage })
+    compact_after_done()
   end
 
   ---Handle finish plan if complete.
@@ -1577,6 +1609,7 @@ function HttpBackend:send(agent, conversation, callback)
           elseif has_streamed_tool_calls and final_is_completed_plan then
             conversation:set_status("idle", { autosave = false })
             callback(true, nil, sanitize_plan_response(final_text), { done = true, info = info, usage = usage })
+            compact_after_done()
           elseif has_streamed_tool_calls and not plan_completed then
             chunks = {}
             request_tool_approval(finalize_stream_tool_calls(streamed_tool_calls), round or 0, true)
@@ -1588,6 +1621,7 @@ function HttpBackend:send(agent, conversation, callback)
             conversation:set_status("idle", { autosave = false })
             final_text = sanitize_plan_response(final_text)
             callback(true, nil, final_text, { done = true, info = info, usage = usage })
+            compact_after_done()
           else
             emit_partial(true)
             conversation:set_status("idle", { autosave = false })
@@ -1595,6 +1629,7 @@ function HttpBackend:send(agent, conversation, callback)
               final_text = sanitize_plan_response(final_text)
             end
             callback(true, nil, final_text, { done = true, info = info, usage = usage })
+            compact_after_done()
           end
         else
           flush_raw_stream_events(true)

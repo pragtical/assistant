@@ -1444,10 +1444,12 @@ end
 ---Handle tool result provider message.
 ---@param call table
 ---@param result any
+---@param options table|nil
 ---@return table
-function Agent:tool_result_provider_message(call, result)
+function Agent:tool_result_provider_message(call, result, options)
   local name = call and call.name or "unknown"
-  local content = self:compact_tool_result(call, result)
+  local compact = not (options and options.compact == false)
+  local content = compact and self:compact_tool_result(call, result) or self:tool_result_text(result)
   return {
     role = "tool",
     tool_call_id = call.id,
@@ -1463,10 +1465,12 @@ end
 ---Handle tool result provider messages.
 ---@param call table
 ---@param result any
+---@param options table|nil
 ---@return table[] messages
-function Agent:tool_result_provider_messages(call, result)
-  local messages = { self:tool_result_provider_message(call, result) }
-  local image_message = self:tool_result_image_context_message(call, result)
+function Agent:tool_result_provider_messages(call, result, options)
+  local messages = { self:tool_result_provider_message(call, result, options) }
+  local include_images = not (options and options.include_images == false)
+  local image_message = include_images and self:tool_result_image_context_message(call, result) or nil
   if image_message then table.insert(messages, image_message) end
   return messages
 end
