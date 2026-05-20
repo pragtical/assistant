@@ -40,6 +40,7 @@ config.plugins.assistant = common.merge({
   log_protocol = false,
   log_raw_messages = true,
   verbose_tool_calling = false,
+  verbose_activity = false,
   reasoning_activity_messages = true,
   compact_tool_results = true,
   compact_tool_history = true,
@@ -291,6 +292,13 @@ config.plugins.assistant = common.merge({
       label = "Verbose Tool Calling",
       description = "Show full tool call and tool result sections in conversation transcripts.",
       path = "verbose_tool_calling",
+      type = "toggle",
+      default = false
+    },
+    {
+      label = "Verbose Activity",
+      description = "Show activity messages as full Activity sections instead of compact one-line summaries.",
+      path = "verbose_activity",
       type = "toggle",
       default = false
     },

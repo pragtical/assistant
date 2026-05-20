@@ -188,6 +188,136 @@ local function verbose_tool_calling()
   return conf.verbose_tool_calling == true
 end
 
+---Return whether activity messages should render as full sections.
+---@return boolean
+local function verbose_activity()
+  local conf = config.plugins and config.plugins.assistant or {}
+  return conf.verbose_activity == true
+end
+
+---Return the first captured field from an activity body.
+---@param text string
+---@param name string
+---@return string|nil
+local function activity_field(text, name)
+  return tostring(text or ""):match("\n" .. name .. ":%s*`([^`\n]+)`")
+    or tostring(text or ""):match("^" .. name .. ":%s*`([^`\n]+)`")
+    or tostring(text or ""):match("\n" .. name .. ":%s*([^\n]+)")
+    or tostring(text or ""):match("^" .. name .. ":%s*([^\n]+)")
+end
+
+---Return the first fenced diff block in an activity body.
+---@param text string
+---@return string|nil
+local function activity_diff(text)
+  return tostring(text or ""):match("```diff\n.-\n```")
+end
+
+---Return the first backticked line after an activity heading.
+---@param text string
+---@return string|nil
+local function activity_first_ticked_line(text)
+  for line in (tostring(text or "") .. "\n"):gmatch("(.-)\n") do
+    local value = line:match("^`([^`]+)`%s*$")
+    if value then return value end
+  end
+end
+
+---Append a status suffix.
+---@param status string|nil
+---@return string
+local function activity_status(status)
+  status = tostring(status or "")
+  return status ~= "" and " (" .. status .. ")" or ""
+end
+
+---Wrap an activity target in backticks.
+---@param value string|nil
+---@param fallback string
+---@return string
+local function activity_target(value, fallback)
+  value = tostring(value or "")
+  return "`" .. (value ~= "" and value or fallback) .. "`"
+end
+
+---Return fallback compact Markdown for an activity message.
+---@param msg table
+---@return string
+local function compact_activity_markdown(msg)
+  local text = tostring(msg and msg.message or "")
+  if text == "" then return nil end
+  if msg.meta and msg.meta.compact_activity_markdown then
+    return tostring(msg.meta.compact_activity_markdown)
+  end
+
+  local reasoning = text:match("^Reasoning%s*\n\n(.*)$")
+  if reasoning then return "## Reasoning\n\n" .. reasoning end
+  if not text:find("\n", 1, true) and text:match("^[%w%s]+$") then return "**" .. text .. "**" end
+
+  local status = activity_field(text, "Status")
+  local tool = activity_field(text, "Tool")
+  local command = activity_field(text, "Command") or activity_first_ticked_line(text)
+  local cwd = activity_field(text, "Cwd")
+  local path = activity_field(text, "Path") or activity_first_ticked_line(text)
+  local url = activity_field(text, "URL")
+  local diff = activity_diff(text)
+
+  if text:find("^Running command", 1, false) then
+    if tool then
+      local line = "**Running command**: " .. activity_target(command, "command")
+      if cwd and cwd ~= "" then line = line .. " in " .. activity_target(cwd, "cwd") end
+      return line .. activity_status(status)
+    end
+    return "**Running**: " .. activity_target(command, "command") .. activity_status(status)
+  end
+
+  if text:find("^Editing files", 1, false) then
+    local label = tool and "**Patching**: " or "**Editing**: "
+    local line = label .. activity_target(path, "file") .. activity_status(status)
+    return diff and (line .. "\n\n" .. diff) or line
+  end
+
+  if text:find("^Inspecting project", 1, false) then
+    if tool == "read" then
+      return "**Reading**: " .. activity_target(path, "path") .. activity_status(status)
+    end
+    local target = path or activity_field(text, "Directory") or activity_field(text, "Query")
+    return "**Inspecting project**: " .. activity_target(target, "target") .. activity_status(status)
+  end
+
+  if text:find("^Searching web", 1, false) then
+    return "**Searching web**: " .. tostring(url or "web") .. activity_status(status)
+  end
+
+  if text:find("^Calling tool", 1, false) then
+    if tool == "time" then return "**Checking Time**:" .. activity_status(status) end
+    return "**Calling " .. tostring(tool or "tool") .. "**:" .. activity_status(status)
+  end
+
+  local title, rest = text:match("^([^\n]+)\n(.+)$")
+  if title and (path or status) and not title:find(": ", 1, true) then
+    local target = path and path ~= "" and (" " .. activity_target(path, "file")) or ""
+    local line = "**" .. title .. "**:" .. target .. activity_status(status)
+    return diff and (line .. "\n\n" .. diff) or line
+  end
+
+  local thinking = text:match("^Thinking:%s*(.*)$")
+  if thinking then return "**Thinking**: " .. thinking end
+
+  local permission_title, permission_body = text:match("^Permission requested:%s*([^\n]+)\n?(.*)$")
+  if permission_title then
+    local command_text = tostring(permission_body or ""):match("`([^`]+)`")
+    if command_text then return "**Permission requested**: Run `" .. command_text .. "`" end
+    return "**Permission requested**: " .. permission_title
+  end
+
+  local first, rest = text:match("^([^\n:]+):%s*(.*)$")
+  if first and rest and rest ~= "" then return "**" .. first .. "**: " .. rest end
+  first, rest = text:match("^([^\n]+)\n\n(.*)$")
+  if first and rest and rest ~= "" then return "**" .. first .. "**: " .. rest end
+  return "**Activity**: " .. text
+end
+
 ---Handle sessions dir.
 ---@param project_dir string|nil
 ---@return string
@@ -645,6 +775,9 @@ function Conversation:message_to_markdown(msg)
   if msg.role == "tool_call" then
     local markdown = apply_patch_markdown(msg)
     if markdown then return markdown end
+  end
+  if msg.role == "activity" and not verbose_activity() then
+    return compact_activity_markdown(msg)
   end
   local label = msg.role:gsub("_", " "):gsub("^%l", string.upper)
   if msg.role == "error" or msg.role == "tool_call" or msg.role == "tool_result" then

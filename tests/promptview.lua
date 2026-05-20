@@ -1446,6 +1446,66 @@ test.describe("assistant prompt view", function()
     test.equal(view.conversation:to_markdown():find("## Assistant", 1, true), nil)
   end)
 
+  test.it("refreshes transcript text for backend activity updates", function()
+    local agent = Codex()
+    local callback
+    local conversation = Conversation(agent, "/tmp")
+    local view = PromptView({
+      agent = agent,
+      conversation = conversation,
+      backend = {
+        send = function(_, _, _, cb)
+          callback = cb
+        end
+      }
+    })
+
+    view.prompt_doc:insert(1, 1, "hello")
+    view:submit()
+    conversation:add("activity", "Inspecting project\n\nTool: `read`\nPath: `/tmp/main.c`\nStatus: requested", {
+      autosave = false
+    })
+    callback(true, nil, "", { event = "activity_update", partial = true })
+
+    test.equal(view.transcript_markdown_text:find("**Reading**: `/tmp/main.c` (requested)", 1, true) ~= nil, true)
+    test.equal(view.conversation:to_markdown():find("## Assistant", 1, true), nil)
+  end)
+
+  test.it("does not rebuild transcript for activity updates while assistant text is streaming", function()
+    local agent = Codex()
+    local callback
+    local conversation = Conversation(agent, "/tmp")
+    local view = PromptView({
+      agent = agent,
+      conversation = conversation,
+      backend = {
+        send = function(_, _, _, cb)
+          callback = cb
+        end
+      }
+    })
+
+    local set_text_calls = 0
+    local original_set_text = view.transcript.set_text
+    view.transcript.set_text = function(this, text)
+      set_text_calls = set_text_calls + 1
+      return original_set_text(this, text)
+    end
+
+    view.prompt_doc:insert(1, 1, "hello")
+    view:submit()
+    callback(true, nil, "partial", { partial = true })
+    set_text_calls = 0
+    conversation:add("activity", "Inspecting project\n\nTool: `read`\nPath: `/tmp/main.c`\nStatus: requested", {
+      autosave = false
+    })
+    callback(true, nil, "", { event = "activity_update", partial = true })
+
+    test.not_nil(view.pending_assistant)
+    test.equal(view.pending_assistant.message, "partial")
+    test.equal(set_text_calls, 0)
+  end)
+
   test.it("adds assistant heading when provider output arrives", function()
     local agent = Codex()
     local callback

@@ -422,7 +422,7 @@ local function compact_deferred_tool_results(agent, conversation)
 end
 
 ---Add activity.
-local function add_activity(conversation, text, key)
+local function add_activity(conversation, text, key, compact_markdown)
   text = tostring(text or "")
   if text == "" then return end
   local last = conversation:last()
@@ -436,13 +436,14 @@ local function add_activity(conversation, text, key)
     autosave = false,
     meta = {
       http_activity = true,
-      http_activity_key = key
+      http_activity_key = key,
+      compact_activity_markdown = compact_markdown
     }
   })
 end
 
 ---Handle upsert activity.
-local function upsert_activity(conversation, text, key)
+local function upsert_activity(conversation, text, key, compact_markdown)
   text = tostring(text or "")
   if text == "" then return end
   for index = #(conversation.messages or {}), 1, -1 do
@@ -456,10 +457,13 @@ local function upsert_activity(conversation, text, key)
         message.message = text
         conversation:touch()
       end
+      if compact_markdown and message.meta then
+        message.meta.compact_activity_markdown = compact_markdown
+      end
       return
     end
   end
-  add_activity(conversation, text, key)
+  add_activity(conversation, text, key, compact_markdown)
 end
 
 ---Handle tool activity label.
@@ -590,8 +594,19 @@ end
 ---Add tool activity.
 local function add_tool_activity(agent, conversation, call, status, result)
   local name = call and (agent.resolve_tool_name and agent:resolve_tool_name(call.name) or call.name) or "unknown"
+  if call then call.name = name end
   local id = call and (call.id or call.call_id or tool_call_signature(agent, call)) or name
-  add_activity(conversation, tool_activity_text(agent, call, status, result), "tool:" .. tostring(name) .. ":" .. tostring(status or "pending") .. ":" .. tostring(id))
+  local tool = agent.tools and agent.tools[name] or nil
+  local activity_context = {
+    verbose_tool_calling = verbose_tool_calling()
+  }
+  local verbose = tool and tool.activity_markdown
+    and tool.activity_markdown(call, status, result, activity_context)
+    or tool_activity_text(agent, call, status, result)
+  local compact = tool and tool.compact_activity_markdown
+    and tool.compact_activity_markdown(call, status, result, activity_context)
+    or nil
+  add_activity(conversation, verbose, "tool:" .. tostring(name) .. ":" .. tostring(status or "pending") .. ":" .. tostring(id), compact)
 end
 
 ---Handle resume on main thread.

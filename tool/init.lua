@@ -13,6 +13,9 @@
 ---@field compact_result function|nil
 ---@field compact_provider_call function|nil
 ---@field compact_history function|nil
+---@field activity_label function|nil
+---@field activity_markdown function|nil
+---@field compact_activity_markdown function|nil
 ---@field result_is_successful function|nil
 ---@field additional_properties boolean|nil
 ---@field new fun(self: assistant.Tool, spec: table): assistant.Tool
@@ -26,6 +29,9 @@
 ---@field compact_result function|nil
 ---@field compact_provider_call function|nil
 ---@field compact_history function|nil
+---@field activity_label function|nil
+---@field activity_markdown function|nil
+---@field compact_activity_markdown function|nil
 ---@field result_is_successful function|nil
 ---@field additional_properties boolean|nil
 local json = require "core.json"
@@ -48,6 +54,68 @@ Tool.LARGE_ARGUMENT_KEYS = {
   patch = true,
   text = true
 }
+
+---Wrap text in a Markdown code fence.
+---@param text any
+---@param language string|nil
+---@return string
+function Tool.fenced(text, language)
+  return "```" .. (language or "text") .. "\n" .. tostring(text or "") .. "\n```"
+end
+
+---Return a concise display form for a status.
+---@param status any
+---@return string
+function Tool.status_suffix(status)
+  status = tostring(status or "")
+  return status ~= "" and " (" .. status .. ")" or ""
+end
+
+---Return a backticked value, or an empty string when missing.
+---@param value any
+---@return string
+function Tool.ticked(value)
+  value = tostring(value or "")
+  return value ~= "" and "`" .. value .. "`" or ""
+end
+
+---Return a text field from a structured tool result.
+---@param result any
+---@return string
+function Tool.result_text(result)
+  if type(result) == "table" then
+    return tostring(result.text or result.message or "")
+  end
+  return tostring(result or "")
+end
+
+---Return the first lines from a text value.
+---@param text any
+---@param max_lines integer
+---@return string
+function Tool.first_lines(text, max_lines)
+  local lines = {}
+  local count = 0
+  for line in (tostring(text or "") .. "\n"):gmatch("(.-)\n") do
+    count = count + 1
+    if #lines < max_lines then table.insert(lines, line) end
+  end
+  local output = table.concat(lines, "\n")
+  if count > max_lines then
+    output = output .. "\n... truncated after " .. tostring(max_lines) .. " lines ..."
+  end
+  return output
+end
+
+---Return a compact activity detail for a result.
+---@param result any
+---@return string|nil
+function Tool.compact_result_detail(result)
+  local text = Tool.result_text(result)
+  if text == "" then return nil end
+  if #text > 12000 then text = text:sub(1, 12000) .. "\n\n... truncated for transcript ..." end
+  return Tool.fenced(text, "text")
+end
 
 ---Clone a table recursively.
 ---@param value any
@@ -143,6 +211,52 @@ function Tool:compact_result(_, result)
   return Tool.compact_long_text(result, Tool.RESULT_CONTENT_LIMIT)
 end
 
+---Return the default activity label for this tool.
+---@param _ table|nil
+---@param _ string|nil
+---@param _ any
+---@param _ table|nil
+---@return string
+function Tool:activity_label(_, _, _, _)
+  return "Calling tool"
+end
+
+---Return the default verbose activity body for this tool.
+---@param call table|nil
+---@param status string|nil
+---@param result any
+---@param context table|nil
+---@return string
+function Tool:activity_markdown(call, status, result, context)
+  local label = self.activity_label and self.activity_label(call, status, result, context)
+    or Tool.activity_label(self, call, status, result, context)
+  local lines = { label, "", "Tool: `" .. tostring(self.name or (call and call.name) or "unknown") .. "`" }
+  local args = call and call.arguments or {}
+  if type(args) == "table" then
+    if args.cmd or args.command then table.insert(lines, "Command: `" .. tostring(args.cmd or args.command) .. "`") end
+    if args.workdir or args.cwd then table.insert(lines, "Cwd: `" .. tostring(args.workdir or args.cwd) .. "`") end
+    if args.path then table.insert(lines, "Path: `" .. tostring(args.path) .. "`") end
+    if args.directory then table.insert(lines, "Directory: `" .. tostring(args.directory) .. "`") end
+    if args.url then table.insert(lines, "URL: `" .. tostring(args.url) .. "`") end
+  end
+  if status then table.insert(lines, "Status: " .. tostring(status)) end
+  if result ~= nil and result ~= "" then
+    table.insert(lines, "")
+    table.insert(lines, Tool.compact_result_detail(result) or "")
+  end
+  return table.concat(lines, "\n")
+end
+
+---Return compact activity Markdown for this tool.
+---@param _ table|nil
+---@param status string|nil
+---@param _ any
+---@param _ table|nil
+---@return string
+function Tool:compact_activity_markdown(_, status, _, _)
+  return "**Calling " .. tostring(self.name or "tool") .. "**:" .. Tool.status_suffix(status)
+end
+
 ---Return whether a tool result represents a successful historical operation.
 ---@return boolean
 function Tool:result_is_successful()
@@ -180,6 +294,15 @@ function Tool:registration(agent, facade)
   end
   registration.compact_provider_call = registration.compact_provider_call or function(call, context)
     return Tool.compact_provider_call(registration, call, context)
+  end
+  registration.activity_label = registration.activity_label or function(call, status, result, context)
+    return Tool.activity_label(registration, call, status, result, context)
+  end
+  registration.activity_markdown = registration.activity_markdown or function(call, status, result, context)
+    return Tool.activity_markdown(registration, call, status, result, context)
+  end
+  registration.compact_activity_markdown = registration.compact_activity_markdown or function(call, status, result, context)
+    return Tool.compact_activity_markdown(registration, call, status, result, context)
   end
   registration.result_is_successful = registration.result_is_successful or function(call, result_message, context)
     return Tool.result_is_successful(registration, call, result_message, context)

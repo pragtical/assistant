@@ -24,6 +24,133 @@ local function read_approval(key)
   end
 end
 
+---Return compact status suffix.
+---@param status any
+---@return string
+local function status(status)
+  return Tool.status_suffix(status)
+end
+
+---Return a compact target from common file arguments.
+---@param call table|nil
+---@return string
+local function target(call)
+  local args = call and call.arguments or {}
+  return tostring(args.path or args.directory or args.text or args.pattern or "")
+end
+
+---Return a one-line compact file activity.
+---@param label string
+---@return fun(call: table|nil, status: string|nil): string
+local function compact_file_activity(label)
+  return function(call, status_value)
+    local value = target(call)
+    return "**" .. label .. "**: " .. (value ~= "" and Tool.ticked(value) or "`target`") .. status(status_value)
+  end
+end
+
+---Return compact mutation activity.
+---@param call table|nil
+---@param status_value string|nil
+---@param result any
+---@return string
+local function compact_write_activity(call, status_value, result)
+  local args = call and call.arguments or {}
+  local value = target(call)
+  local exists = false
+  local absolute = context.assert_project_path(args.path or value)
+  if absolute then exists = system.get_file_info(absolute) ~= nil end
+  local result_text = Tool.result_text(result)
+  local label = (result_text:find("^created:", 1, false) or (status_value == "requested" and not exists))
+    and "Adding"
+    or "Writing"
+  local line = "**" .. label .. "**: " .. (value ~= "" and Tool.ticked(value) or "`file`") .. status(status_value)
+  if status_value ~= "requested" then return line end
+  local content = tostring(args.content or "")
+  if content == "" then return line end
+  local chunks = {}
+  for text_line in (content:gsub("\r\n", "\n"):gsub("\r", "\n") .. "\n"):gmatch("(.-)\n") do
+    table.insert(chunks, "+" .. text_line)
+  end
+  local diff = table.concat(chunks, "\n")
+  if #diff > 12000 then diff = diff:sub(1, 12000) .. "\n\n... truncated for transcript ..." end
+  return line .. "\n\n" .. Tool.fenced(diff, "diff")
+end
+
+---Return edits normalized to a list of replacement tables.
+---@param args table
+---@return table[]
+local function edit_list(args)
+  args = type(args) == "table" and args or {}
+  local edits = args.edits
+  if type(edits) ~= "table" and (args.oldText ~= nil or args.newText ~= nil) then
+    edits = { { oldText = args.oldText, newText = args.newText } }
+  elseif type(edits) == "table" and (edits.oldText or edits.newText) then
+    edits = { edits }
+  end
+  return type(edits) == "table" and edits or {}
+end
+
+---Return a readable diff preview for exact edit replacements.
+---@param args table
+---@return string|nil
+local function edit_diff(args)
+  local function normalize(text)
+    return tostring(text or ""):gsub("\r\n", "\n"):gsub("\r", "\n")
+  end
+  local chunks = {}
+  for index, edit in ipairs(edit_list(args)) do
+    if type(edit) == "table" then
+      if #chunks > 0 then table.insert(chunks, "") end
+      table.insert(chunks, "@@ edit " .. tostring(index) .. " @@")
+      for line in (normalize(edit.oldText) .. "\n"):gmatch("(.-)\n") do
+        table.insert(chunks, "-" .. line)
+      end
+      for line in (normalize(edit.newText) .. "\n"):gmatch("(.-)\n") do
+        table.insert(chunks, "+" .. line)
+      end
+    end
+  end
+  if #chunks == 0 then return nil end
+  local text = table.concat(chunks, "\n")
+  if #text > 12000 then text = text:sub(1, 12000) .. "\n\n... truncated for transcript ..." end
+  return Tool.fenced(text, "diff")
+end
+
+---Return compact edit activity with replacement diff preview.
+---@param call table|nil
+---@param status_value string|nil
+---@return string
+local function compact_edit_activity(call, status_value)
+  local args = call and call.arguments or {}
+  local value = target(call)
+  local line = "**Editing**: " .. (value ~= "" and Tool.ticked(value) or "`file`") .. status(status_value)
+  local diff = status_value == "requested" and edit_diff(args) or nil
+  return diff and (line .. "\n\n" .. diff) or line
+end
+
+---Return verbose read activity with a small result preview.
+---@param call table|nil
+---@param status_value string|nil
+---@param result any
+---@return string
+local function read_activity_markdown(call, status_value, result)
+  local args = call and call.arguments or {}
+  local lines = {
+    "Inspecting project",
+    "",
+    "Tool: `read`"
+  }
+  if args.path then table.insert(lines, "Path: `" .. tostring(args.path) .. "`") end
+  if status_value then table.insert(lines, "Status: " .. tostring(status_value)) end
+  local text = Tool.result_text(result)
+  if text ~= "" then
+    table.insert(lines, "")
+    table.insert(lines, Tool.fenced(Tool.first_lines(text, 3), "text"))
+  end
+  return table.concat(lines, "\n")
+end
+
 local READ_MAX_LINES = 2000
 local READ_MAX_BYTES = 50 * 1024
 local IMAGE_MAX_DIMENSION = 1024
@@ -646,6 +773,9 @@ filetools.tools = {
       local path = call and call.arguments and call.arguments.path
       return context.compact_provider_text_result(result_text(result), "file read: " .. tostring(path or ""))
     end,
+    activity_label = function() return "Inspecting project" end,
+    activity_markdown = read_activity_markdown,
+    compact_activity_markdown = compact_file_activity("Reading"),
     description = "Read the contents of a file. Supports text files and images (jpg, jpeg, png, gif, webp, bmp, svg, and other Pragtical-supported image formats). Images are sent as attachments. For text files, output is truncated to 2000 lines or 50KB (whichever is hit first). Use offset/limit for large files. When you need the full file, continue with offset until complete.",
     read_only = true,
     requires_approval = read_approval("path"),
@@ -659,6 +789,8 @@ filetools.tools = {
     name = "search",
     callback = filetools.search,
     compact_result = compact("search result"),
+    activity_label = function() return "Inspecting project" end,
+    compact_activity_markdown = compact_file_activity("Inspecting project"),
     description = "Search for text in a project directory.",
     read_only = true,
     requires_approval = read_approval("directory"),
@@ -672,6 +804,8 @@ filetools.tools = {
     name = "list",
     callback = filetools.list,
     compact_result = compact("file listing"),
+    activity_label = function() return "Inspecting project" end,
+    compact_activity_markdown = compact_file_activity("Inspecting project"),
     description = "List files and directories inside a project directory.",
     read_only = true,
     requires_approval = read_approval("directory"),
@@ -685,6 +819,8 @@ filetools.tools = {
   Tool:new({
     name = "file_info",
     callback = filetools.file_info,
+    activity_label = function() return "Inspecting project" end,
+    compact_activity_markdown = compact_file_activity("Inspecting project"),
     description = "Get project file metadata and content hash.",
     read_only = true,
     requires_approval = read_approval("path"),
@@ -695,6 +831,8 @@ filetools.tools = {
   Tool:new({
     name = "write",
     callback = filetools.write_file,
+    activity_label = function() return "Editing files" end,
+    compact_activity_markdown = compact_write_activity,
     description = "Write content to a file. Creates the file if it doesn't exist, overwrites if it does. Automatically creates parent directories.",
     params = {
       { name = "path", description = "Path to the file to write (relative or absolute)", type = "string" },
@@ -704,6 +842,8 @@ filetools.tools = {
   Tool:new({
     name = "edit",
     callback = filetools.edit,
+    activity_label = function() return "Editing files" end,
+    compact_activity_markdown = compact_edit_activity,
     description = "Edit a single file using exact text replacement. Every edits[].oldText must match a unique, non-overlapping region of the original file. If two changes affect the same block or nearby lines, merge them into one edit instead of emitting overlapping edits. Do not include large unchanged regions just to connect distant changes.",
     params = {
       { name = "path", description = "Path to the file to edit (relative or absolute)", type = "string" },

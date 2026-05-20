@@ -16,6 +16,16 @@ local function compact(label)
   end
 end
 
+---Return compact web activity.
+---@param call table|nil
+---@param status string|nil
+---@return string
+local function compact_web_activity(call, status)
+  local args = call and call.arguments or {}
+  local target = tostring(args.url or args.query or "")
+  return "**Searching web**: " .. (target ~= "" and target or "web") .. Tool.status_suffix(status)
+end
+
 ---Handle web fetch raw.
 ---@param url string
 ---@param method string?
@@ -264,6 +274,8 @@ webtools.tools = {
     name = "web_fetch",
     callback = webtools.web_fetch,
     compact_result = compact("web fetch"),
+    activity_label = function() return "Searching web" end,
+    compact_activity_markdown = compact_web_activity,
     description = "Fetch an HTTP or HTTPS URL with Pragtical core.http after user confirmation.",
     read_only = true,
     requires_approval = context.web_request_requires_approval,
@@ -279,6 +291,8 @@ webtools.tools = {
     name = "web_search",
     callback = webtools.web_search,
     compact_result = compact("web search"),
+    activity_label = function() return "Searching web" end,
+    compact_activity_markdown = compact_web_activity,
     description = "Search the web using the configured assistant web search page or JSON endpoint.",
     read_only = true,
     requires_approval = context.web_request_requires_approval,
@@ -292,6 +306,8 @@ webtools.tools = {
     name = "web_find",
     callback = webtools.web_find,
     compact_result = compact("web find"),
+    activity_label = function() return "Searching web" end,
+    compact_activity_markdown = compact_web_activity,
     description = "Fetch a URL and return lines matching a pattern.",
     read_only = true,
     requires_approval = context.web_request_requires_approval,

@@ -15,6 +15,34 @@ local function compact(label)
   end
 end
 
+---Return display text for a process/session tool call.
+---@param call table|nil
+---@return string
+local function command_text(call)
+  local name = call and call.name
+  local args = call and call.arguments or {}
+  if name == "exec_command" then return tostring(args.cmd or "") end
+  if name == "exec_status" then return "poll session " .. tostring(args.session_id or "") end
+  if name == "write_stdin" then return "write stdin to session " .. tostring(args.session_id or "") end
+  if name == "send_eof" then return "close stdin for session " .. tostring(args.session_id or "") end
+  if name == "interrupt_exec" then return "interrupt session " .. tostring(args.session_id or "") end
+  if name == "close_exec" then return "close session " .. tostring(args.session_id or "") end
+  return tostring(args.cmd or args.command or "")
+end
+
+---Format process tool activity.
+---@param call table|nil
+---@param status string|nil
+---@return string
+local function process_compact_activity(call, status)
+  local args = call and call.arguments or {}
+  local command = command_text(call)
+  local cwd = tostring(args.workdir or args.cwd or "")
+  local line = "**Running command**: " .. (Tool.ticked(command) ~= "" and Tool.ticked(command) or "`command`")
+  if cwd ~= "" then line = line .. " in " .. Tool.ticked(cwd) end
+  return line .. Tool.status_suffix(status)
+end
+
 local process_sessions = {}
 local next_process_session_id = 1
 
@@ -217,6 +245,8 @@ processtools.tools = {
     name = "exec_command",
     callback = processtools.exec_command,
     compact_result = compact("command output"),
+    activity_label = function() return "Running command" end,
+    compact_activity_markdown = process_compact_activity,
     description = "Runs a command in a loaded project root, returning output or a session_id for ongoing interaction.",
     requires_approval = function(arguments)
       return context.command_requires_approval({
@@ -241,6 +271,8 @@ processtools.tools = {
     name = "write_stdin",
     callback = processtools.write_stdin,
     compact_result = compact("command output"),
+    activity_label = function() return "Running command" end,
+    compact_activity_markdown = process_compact_activity,
     description = "Writes characters to an existing exec_command session and returns recent output.",
     read_only = true,
     params = {
@@ -254,6 +286,8 @@ processtools.tools = {
     name = "exec_status",
     callback = processtools.exec_status,
     compact_result = compact("command output"),
+    activity_label = function() return "Running command" end,
+    compact_activity_markdown = process_compact_activity,
     description = "Poll an existing exec_command session and return recent output.",
     read_only = true,
     params = {
@@ -266,6 +300,8 @@ processtools.tools = {
     name = "send_eof",
     callback = processtools.send_eof,
     compact_result = compact("command output"),
+    activity_label = function() return "Running command" end,
+    compact_activity_markdown = process_compact_activity,
     description = "Close stdin for an existing exec_command session and return recent output.",
     read_only = true,
     params = {
@@ -278,6 +314,8 @@ processtools.tools = {
     name = "interrupt_exec",
     callback = processtools.interrupt_exec,
     compact_result = compact("command output"),
+    activity_label = function() return "Running command" end,
+    compact_activity_markdown = process_compact_activity,
     description = "Interrupt an existing exec_command session and return recent output.",
     read_only = true,
     params = {
@@ -290,6 +328,8 @@ processtools.tools = {
     name = "close_exec",
     callback = processtools.close_exec,
     compact_result = compact("command output"),
+    activity_label = function() return "Running command" end,
+    compact_activity_markdown = process_compact_activity,
     description = "Terminate an existing exec_command session and return recent output.",
     read_only = true,
     params = {

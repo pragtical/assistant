@@ -169,6 +169,10 @@ misctools.tools = {
   Tool:new({
     name = "time",
     callback = misctools.time,
+    activity_label = function() return "Calling tool" end,
+    compact_activity_markdown = function(_, status)
+      return "**Checking Time**:" .. Tool.status_suffix(status)
+    end,
     description = "Return the current system time, optionally adjusted to a UTC offset.",
     read_only = true,
     params = {

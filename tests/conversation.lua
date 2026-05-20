@@ -22,12 +22,15 @@ end
 test.describe("assistant conversation", function()
   local old_log_raw_messages
   local old_verbose_tool_calling
+  local old_verbose_activity
 
   test.before_each(function()
     old_log_raw_messages = config.plugins.assistant.log_raw_messages
     old_verbose_tool_calling = config.plugins.assistant.verbose_tool_calling
+    old_verbose_activity = config.plugins.assistant.verbose_activity
     config.plugins.assistant.log_raw_messages = true
     config.plugins.assistant.verbose_tool_calling = false
+    config.plugins.assistant.verbose_activity = false
     common.rm(root, true)
     mkdirp(root)
   end)
@@ -35,6 +38,7 @@ test.describe("assistant conversation", function()
   test.after_each(function()
     config.plugins.assistant.log_raw_messages = old_log_raw_messages
     config.plugins.assistant.verbose_tool_calling = old_verbose_tool_calling
+    config.plugins.assistant.verbose_activity = old_verbose_activity
   end)
 
   test.it("starts with coding assistant project context", function()
@@ -239,9 +243,27 @@ test.describe("assistant conversation", function()
     local md = conversation:to_markdown()
     local messages = conversation:to_provider_messages()
 
+    test.equal(md:find("## Activity", 1, true), nil)
+    test.equal(md:find("**Thinking**: checking files", 1, true) ~= nil, true)
+    test.equal(messages[#messages].role, "user")
+  end)
+
+  test.it("renders verbose activity messages when configured", function()
+    config.plugins.assistant.verbose_activity = true
+    local conversation = Conversation(Ollama(), root)
+    conversation:add("activity", "Thinking: checking files", { autosave = false })
+
+    local md = conversation:to_markdown()
     test.equal(md:find("## Activity", 1, true) ~= nil, true)
     test.equal(md:find("Thinking: checking files", 1, true) ~= nil, true)
-    test.equal(messages[#messages].role, "user")
+  end)
+
+  test.it("renders reasoning activity as a reasoning section", function()
+    local conversation = Conversation(Ollama(), root)
+    conversation:add("activity", "Reasoning\n\nThe directory is empty.", { autosave = false })
+
+    local md = conversation:to_markdown()
+    test.equal(md:find("## Reasoning\n\nThe directory is empty.", 1, true) ~= nil, true)
   end)
 
   test.it("renders apply_patch tool calls with diff fences", function()
@@ -287,7 +309,8 @@ test.describe("assistant conversation", function()
     local md = conversation:to_markdown()
     test.equal(md:find("## Tool call", 1, true), nil)
     test.equal(md:find("## Tool result", 1, true), nil)
-    test.equal(md:find("## Activity", 1, true) ~= nil, true)
+    test.equal(md:find("## Activity", 1, true), nil)
+    test.equal(md:find("**Editing files**", 1, true) ~= nil, true)
 
     config.plugins.assistant.verbose_tool_calling = true
     md = conversation:to_markdown()

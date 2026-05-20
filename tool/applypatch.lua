@@ -10,6 +10,61 @@ local Tool = require "plugins.assistant.tool"
 ---@class assistant.tool.applypatch
 local applypatch = {}
 
+---Return the first path mentioned by a patch.
+---@param patch string
+---@return string
+local function first_patch_path(patch)
+  patch = tostring(patch or "")
+  return patch:match("%*%*%* Add File:%s*([^\n]+)")
+    or patch:match("%*%*%* Update File:%s*([^\n]+)")
+    or patch:match("%*%*%* Delete File:%s*([^\n]+)")
+    or patch:match("%+%+%+ b/([^\n]+)")
+    or patch:match("%+%+%+ ([^\n]+)")
+    or ""
+end
+
+---Return compact apply_patch activity.
+---@param call table|nil
+---@param status string|nil
+---@param result any
+---@return string
+local function compact_apply_patch_activity(call, status, result)
+  local args = call and call.arguments or {}
+  local patch = tostring(args.patch or "")
+  local path = first_patch_path(patch)
+  local line = "**Patching**: " .. (path ~= "" and Tool.ticked(path) or "`files`") .. Tool.status_suffix(status)
+  if patch ~= "" and (status == "requested" or status == "running") then
+    return line .. "\n\n" .. Tool.fenced(patch, "diff")
+  end
+  return line
+end
+
+---Return verbose apply_patch activity with the pending diff.
+---@param call table|nil
+---@param status string|nil
+---@param result any
+---@return string
+local function apply_patch_activity(call, status, result)
+  local args = call and call.arguments or {}
+  local patch = tostring(args.patch or "")
+  local lines = {
+    "Editing files",
+    "",
+    "Tool: `apply_patch`"
+  }
+  local path = first_patch_path(patch)
+  if path ~= "" then table.insert(lines, "Path: `" .. path .. "`") end
+  if status then table.insert(lines, "Status: " .. tostring(status)) end
+  if patch ~= "" and (status == "requested" or status == "running" or result == nil or result == "") then
+    table.insert(lines, "")
+    table.insert(lines, Tool.fenced(patch, "diff"))
+  elseif result ~= nil and result ~= "" then
+    table.insert(lines, "")
+    table.insert(lines, Tool.compact_result_detail(result) or "")
+  end
+  return table.concat(lines, "\n")
+end
+
 ---Handle strip apply patch wrapper.
 local function strip_apply_patch_wrapper(patch)
   local text = tostring(patch or ""):match("^%s*(.-)%s*$")
@@ -834,6 +889,9 @@ applypatch.tools = {
     callback = applypatch.apply_patch,
     result_is_successful = applypatch.result_is_successful,
     compact_history = applypatch.compact_history,
+    activity_label = function() return "Editing files" end,
+    activity_markdown = apply_patch_activity,
+    compact_activity_markdown = compact_apply_patch_activity,
     description = table.concat({
       "Apply a structured patch or unified diff to project files after user confirmation.",
       "When updating, moving, or deleting an existing file, use recent exact file context; if context is stale, summarized, omitted, or compacted, read the target with read first.",

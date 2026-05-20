@@ -921,7 +921,11 @@ function PromptView:dispatch_prompt_turn(text)
       return
     end
     if ok and meta and meta.event == "activity_update" then
-      self:refresh_controls()
+      if self.pending_assistant or self.pending_streaming_transcript_text then
+        self:refresh_controls()
+      else
+        self:refresh()
+      end
       return
     end
     if ok then

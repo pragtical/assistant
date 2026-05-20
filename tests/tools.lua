@@ -6,6 +6,7 @@ local http = require "core.http"
 local json = require "core.json"
 local tool_context = require "plugins.assistant.tool_context"
 local tools = require "plugins.assistant.tools"
+local Ollama = require "plugins.assistant.agent.ollama"
 
 local root = assistant_test_temp_path("tools")
 
@@ -77,6 +78,78 @@ test.describe("assistant tools", function()
         end
       }
     }
+  end)
+
+  test.it("registers activity renderers for exposed tools", function()
+    local agent = tools.register_agent_tools(Ollama())
+    local read_tool = agent.tools.read
+    local exec_tool = agent.tools.exec_command
+    local patch_tool = agent.tools.apply_patch
+    local edit_tool = agent.tools.edit
+    local write_tool = agent.tools.write
+
+    test.equal(type(read_tool.activity_markdown), "function")
+    test.equal(type(read_tool.compact_activity_markdown), "function")
+    test.equal(
+      read_tool.compact_activity_markdown({ arguments = { path = "main.c" } }, "completed", ""),
+      "**Reading**: `main.c` (completed)"
+    )
+    test.equal(
+      exec_tool.compact_activity_markdown({ name = "exec_command", arguments = { cmd = "make test", workdir = "project" } }, "running", ""),
+      "**Running command**: `make test` in `project` (running)"
+    )
+    test.equal(
+      patch_tool.compact_activity_markdown({ arguments = { patch = "*** Begin Patch\n*** Update File: main.c\n@@\n-old\n+new\n*** End Patch" } }, "completed", ""),
+      "**Patching**: `main.c` (completed)"
+    )
+    local edit_activity = edit_tool.compact_activity_markdown({
+      arguments = {
+        path = "main.c",
+        edits = {
+          { oldText = "old line", newText = "new line" }
+        }
+      }
+    }, "requested", "")
+    test.equal(edit_activity:find("**Editing**: `main.c` (requested)", 1, true) ~= nil, true)
+    test.equal(edit_activity:find("```diff", 1, true) ~= nil, true)
+    test.equal(edit_activity:find("-old line", 1, true) ~= nil, true)
+    test.equal(edit_activity:find("+new line", 1, true) ~= nil, true)
+    local completed_edit_activity = edit_tool.compact_activity_markdown({
+      arguments = {
+        path = "main.c",
+        edits = {
+          { oldText = "old line", newText = "new line" }
+        }
+      }
+    }, "completed", "")
+    test.equal(completed_edit_activity, "**Editing**: `main.c` (completed)")
+
+    local add_activity = write_tool.compact_activity_markdown({
+      arguments = {
+        path = "new.c",
+        content = "int main(void) {\n  return 0;\n}\n"
+      }
+    }, "requested", "")
+    test.equal(add_activity:find("**Adding**: `new.c` (requested)", 1, true) ~= nil, true)
+    test.equal(add_activity:find("```diff", 1, true) ~= nil, true)
+    test.equal(add_activity:find("+int main(void) {", 1, true) ~= nil, true)
+
+    local write_activity = write_tool.compact_activity_markdown({
+      arguments = {
+        path = "sample.txt",
+        content = "replacement\n"
+      }
+    }, "requested", "")
+    test.equal(write_activity:find("**Writing**: `sample.txt` (requested)", 1, true) ~= nil, true)
+    test.equal(write_activity:find("+replacement", 1, true) ~= nil, true)
+
+    local completed_write_activity = write_tool.compact_activity_markdown({
+      arguments = {
+        path = "sample.txt",
+        content = "replacement\n"
+      }
+    }, "completed", "replaced: sample.txt")
+    test.equal(completed_write_activity, "**Writing**: `sample.txt` (completed)")
   end)
 
   test.after_each(function()
