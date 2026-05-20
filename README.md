@@ -9,6 +9,8 @@ provider integrations, and a guarded tool layer for coding agents.
 ## Features
 
 - Conversation UI with rendered Markdown transcript and Markdown prompt editor.
+- Prompt helpers for inserting files or project files/directories directly into
+  the conversation prompt.
 - Project-local sessions, memories, raw provider logs, and protocol logs.
 - Provider adapters for Ollama, llama.cpp server, LM Studio, OpenAI, Codex, ACP,
   and GitHub Copilot.
@@ -19,6 +21,8 @@ provider integrations, and a guarded tool layer for coding agents.
 - Collaboration modes for planning and implementation, with different tool
   availability and approval behavior.
 - Async prompt queueing and streamed transcript updates.
+- Compact activity rendering by default, with optional verbose activity/tool
+  transcript output for debugging.
 
 ## Tools
 
@@ -68,7 +72,7 @@ Common options:
 - `reasoning_effort`: `none`, `low`, `medium`, or `high`
 - `send_max_tokens` and `send_max_tokens_amount`
 - `compact_tool_results`, `compact_tool_history`, `auto_compact`
-- `verbose_tool_calling`
+- `verbose_tool_calling`, `verbose_activity`
 - `reasoning_activity_messages`
 - `generate_conversation_titles`
 - `confirm_writes`
@@ -97,6 +101,8 @@ Conversation commands:
 - `assistant-conversation:send`
 - `assistant-conversation:cancel`
 - `assistant-conversation:select-model`
+- `assistant-conversation:insert-file`
+- `assistant-conversation:insert-project-file`
 - `assistant-conversation:cycle-mode`
 - `assistant-conversation:compact`
 - `assistant-conversation:view-raw-responses`
@@ -110,10 +116,21 @@ Default keymaps:
 - `ctrl+alt+a`: start a new conversation
 - `ctrl+enter` / `ctrl+return`: send prompt
 - `ctrl+m`: select model
+- `ctrl+alt+u`: insert a file or directory path into the prompt
+- `ctrl+shift+u`: insert a project file path into the prompt
 - `shift+tab`: cycle collaboration mode
 - `escape`: cancel the active conversation request
 - `ctrl+alt+enter` / `ctrl+alt+return`: respond to a pending request
 - `ctrl+backspace`: clear prompt
+
+The prompt view also exposes file buttons above the prompt editor:
+
+- `D`: choose any file or directory through `core:open-file`
+- `L`: choose a project file through `core:find-file`
+
+Inserted project paths are shortened to project-relative paths when possible.
+Directory insertions include a trailing path separator so agents can distinguish
+them from files.
 
 ## Main Files
 
