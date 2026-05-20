@@ -624,6 +624,16 @@ function Agent:provider_messages_for_conversation(conversation)
   return result
 end
 
+---Return display/provider text from a tool result.
+---@param result any
+---@return string
+function Agent:tool_result_text(result)
+  if type(result) == "table" then
+    return tostring(result.text or result.message or "")
+  end
+  return tostring(result or "")
+end
+
 ---Handle tool names for mode.
 ---@param conversation assistant.Conversation|nil
 ---@return string[]|nil names
@@ -1332,7 +1342,7 @@ end
 ---@param status string|nil
 ---@return string
 function Agent:tool_result_display(call, result, status)
-  result = tostring(result or "")
+  result = self:tool_result_text(result)
   if #result > 12000 then
     result = result:sub(1, 12000) .. "\n\n... truncated for display ..."
   end
@@ -1349,9 +1359,10 @@ end
 ---@param result any
 ---@return string
 function Agent:compact_tool_result(call, result)
+  local text_result = self:tool_result_text(result)
   local conf = config.plugins and config.plugins.assistant or {}
   if conf.compact_tool_results ~= true then
-    return tostring(result or "")
+    return text_result
   end
   local name = self:resolve_tool_name(call and call.name)
   local tool = self.tools[name or ""]
@@ -1362,7 +1373,55 @@ function Agent:compact_tool_result(call, result)
     })
     if ok and compacted ~= nil then return tostring(compacted) end
   end
-  return Tool.compact_result(tool or {}, call or {}, result)
+  return Tool.compact_result(tool or {}, call or {}, text_result)
+end
+
+---Build a provider-only image context message for a structured tool result.
+---@param call table
+---@param result any
+---@return table|nil message
+function Agent:tool_result_image_context_message(call, result)
+  if type(result) ~= "table" or type(result.attachments) ~= "table" then return nil end
+  local attachment
+  for _, item in ipairs(result.attachments) do
+    if type(item) == "table" and item.type == "image" and item.data and item.mime_type then
+      attachment = item
+      break
+    end
+  end
+  if not attachment then return nil end
+  local image_url = self:image_url_for_attachment(attachment)
+  local text = string.format(
+    "Image context from `%s` read result: %s [%s] %sx%s.",
+    call and call.name or "tool",
+    attachment.path or "",
+    attachment.mime_type or "image",
+    tostring(attachment.width or ""),
+    tostring(attachment.height or "")
+  )
+  if self.api_format == "responses" then
+    return {
+      role = "user",
+      content = {
+        { type = "input_text", text = text },
+        { type = "input_image", image_url = image_url }
+      }
+    }
+  end
+  return {
+    role = "user",
+    content = {
+      { type = "text", text = text },
+      { type = "image_url", image_url = { url = image_url } }
+    }
+  }
+end
+
+---Build the image URL value expected by this provider.
+---@param attachment table Image attachment with MIME type and base64 data.
+---@return string image_url
+function Agent:image_url_for_attachment(attachment)
+  return string.format("data:%s;base64,%s", attachment.mime_type, attachment.data)
 end
 
 ---Handle tool call provider message.
@@ -1399,6 +1458,17 @@ function Agent:tool_result_provider_message(call, result)
       name
     )
   }
+end
+
+---Handle tool result provider messages.
+---@param call table
+---@param result any
+---@return table[] messages
+function Agent:tool_result_provider_messages(call, result)
+  local messages = { self:tool_result_provider_message(call, result) }
+  local image_message = self:tool_result_image_context_message(call, result)
+  if image_message then table.insert(messages, image_message) end
+  return messages
 end
 
 ---Resolve tool name.
@@ -1446,8 +1516,8 @@ function Agent:execute_tool(call)
   local ok, result, output = pcall(tool.callback, unpack(args, 1, count))
   if not ok then return false, result end
   if result == false then return false, output or "tool failed" end
-  if result == true and output ~= nil then return true, tostring(output) end
-  return true, tostring(result or "")
+  if result == true and output ~= nil then return true, output end
+  return true, result ~= nil and result or ""
 end
 
 ---Handle tool requires approval.

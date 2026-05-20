@@ -117,6 +117,112 @@ test.describe("assistant agent", function()
     test.equal(message.content:find("line 1", 1, true), nil)
   end)
 
+  test.it("adds image read attachments as provider-only chat context", function()
+    local agent = Ollama()
+    local conversation = Conversation(agent, snapshot_root)
+    local call = {
+      id = "call_image",
+      name = "read",
+      arguments = { path = "image.png" }
+    }
+    local result = {
+      text = "Read image file image.png [image/png] original 2x2, sent 2x2.",
+      attachments = {
+        {
+          type = "image",
+          mime_type = "image/png",
+          data = "aW1hZ2U=",
+          path = "image.png",
+          width = 2,
+          height = 2,
+          original_width = 2,
+          original_height = 2
+        }
+      }
+    }
+    conversation:add("tool_call", "Tool: read", {
+      meta = {
+        provider_message = agent:tool_call_provider_message({ call })
+      },
+      autosave = false
+    })
+    conversation:add("tool_result", agent:tool_result_display(call, result, "ok"), {
+      meta = {
+        provider_messages = agent:tool_result_provider_messages(call, result)
+      },
+      autosave = false
+    })
+
+    local payload = agent:build_payload(conversation)
+    local messages = without_environment_messages(payload.messages)
+    local tool_result = messages[#messages - 1]
+    local image_context = messages[#messages]
+
+    test.equal(tool_result.role, "tool")
+    test.equal(tool_result.content:find("Read image file", 1, true) ~= nil, true)
+    test.equal(tool_result.content:find("aW1hZ2U=", 1, true), nil)
+    test.equal(image_context.role, "user")
+    test.equal(image_context.content[1].type, "text")
+    test.equal(image_context.content[2].type, "image_url")
+    test.equal(image_context.content[2].image_url.url, "data:image/png;base64,aW1hZ2U=")
+  end)
+
+  test.it("advertises image support on the read tool", function()
+    local agent = Ollama()
+    tools.register_agent_tools(agent)
+
+    local description = agent.tools.read.description
+
+    test.equal(description:find("Supports text files and images", 1, true) ~= nil, true)
+    test.equal(description:find("Images are sent as attachments", 1, true) ~= nil, true)
+  end)
+
+  test.it("adds image read attachments as OpenAI responses image context", function()
+    local agent = OpenAI()
+    local conversation = Conversation(agent, snapshot_root)
+    local call = {
+      id = "call_image",
+      call_id = "call_image",
+      name = "read",
+      arguments = { path = "image.png" }
+    }
+    local result = {
+      text = "Read image file image.png [image/png] original 2x2, sent 2x2.",
+      attachments = {
+        {
+          type = "image",
+          mime_type = "image/png",
+          data = "aW1hZ2U=",
+          path = "image.png",
+          width = 2,
+          height = 2,
+          original_width = 2,
+          original_height = 2
+        }
+      }
+    }
+    conversation:add("tool_call", "Tool: read", {
+      meta = {
+        provider_message = agent:tool_call_provider_message({ call })
+      },
+      autosave = false
+    })
+    conversation:add("tool_result", agent:tool_result_display(call, result, "ok"), {
+      meta = {
+        provider_messages = agent:tool_result_provider_messages(call, result)
+      },
+      autosave = false
+    })
+
+    local payload = agent:build_payload(conversation)
+    local image_context = payload.input[#payload.input]
+
+    test.equal(image_context.role, "user")
+    test.equal(image_context.content[1].type, "input_text")
+    test.equal(image_context.content[2].type, "input_image")
+    test.equal(image_context.content[2].image_url, "data:image/png;base64,aW1hZ2U=")
+  end)
+
   test.it("truncates large tool call displays", function()
     local agent = Agent()
     local text = agent:tool_call_display({

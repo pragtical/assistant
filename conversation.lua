@@ -711,6 +711,10 @@ function Conversation:to_provider_messages()
     end
     if include and msg.role == "tool_call" and msg.meta and msg.meta.provider_message then
       table.insert(messages, msg.meta.provider_message)
+    elseif include and msg.role == "tool_result" and msg.meta and msg.meta.provider_messages then
+      for _, provider_message in ipairs(msg.meta.provider_messages) do
+        table.insert(messages, provider_message)
+      end
     elseif include and msg.role == "tool_result" and msg.meta and msg.meta.provider_message then
       table.insert(messages, msg.meta.provider_message)
     elseif include

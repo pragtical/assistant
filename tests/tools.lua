@@ -28,6 +28,18 @@ local function read_fixture(path)
   return text
 end
 
+local function shell_quote(path)
+  return "'" .. tostring(path):gsub("'", [["'"']]) .. "'"
+end
+
+local function system_base64(path)
+  local handle = assert(io.popen("base64 " .. shell_quote(path) .. " | tr -d '\\n'", "r"))
+  local output = handle:read("*a")
+  local ok = handle:close()
+  test.ok(ok, "system base64 command failed")
+  return output
+end
+
 test.describe("assistant tools", function()
   local old_allow_any_read_path
   local old_web_search_url
@@ -95,6 +107,63 @@ test.describe("assistant tools", function()
   test.it("reports read offsets beyond end of file", function()
     local result = tools.read(root .. PATHSEP .. "sample.txt", 99)
     test.equal(result:find("beyond end of file", 1, true) ~= nil, true)
+  end)
+
+  test.it("reads supported image files as structured attachments", function()
+    local image_path = root .. PATHSEP .. "sample.png"
+    local image = canvas.new(2, 2, { 255, 0, 0, 255 }, true)
+    local saved, save_err = image:save_image(image_path)
+    test.ok(saved, save_err)
+
+    local result = tools.read(image_path)
+
+    test.equal(type(result), "table")
+    test.equal(result.text:find("Read image file", 1, true) ~= nil, true)
+    test.equal(result.attachments[1].mime_type, "image/png")
+    test.equal(result.attachments[1].original_width, 2)
+    test.equal(result.attachments[1].original_height, 2)
+    test.equal(result.attachments[1].width, 2)
+    test.equal(result.attachments[1].height, 2)
+    test.equal(type(result.attachments[1].data), "string")
+    test.equal(#result.attachments[1].data > 0, true)
+  end)
+
+  test.it("encodes jpeg image attachments as correct base64 png data", function()
+    local image_path = root .. PATHSEP .. "space.jpg"
+    write(image_path, read_fixture("tests" .. PATHSEP .. "space.jpg"))
+    local result = tools.read(image_path)
+    local attachment = result.attachments[1]
+
+    local image = assert(canvas.load_image(image_path))
+    local scaled = image:scaled(1024, 576, "nearest")
+    local expected_path = root .. PATHSEP .. "expected-space.png"
+    local saved, save_err = scaled:save_image(expected_path)
+    test.ok(saved, save_err)
+
+    test.equal(type(result), "table")
+    test.equal(attachment.mime_type, "image/png")
+    test.equal(attachment.original_width, 3840)
+    test.equal(attachment.original_height, 2160)
+    test.equal(attachment.width, 1024)
+    test.equal(attachment.height, 576)
+    test.equal(attachment.data:sub(1, 11), "iVBORw0KGgo")
+    test.equal(attachment.data, system_base64(expected_path))
+  end)
+
+  test.it("reports image load failures as text results", function()
+    local image_path = root .. PATHSEP .. "broken.png"
+    write(image_path, "not a png")
+    local original_load_image = canvas.load_image
+    canvas.load_image = function()
+      return nil, "decode failed"
+    end
+
+    local result = tools.read(image_path)
+
+    canvas.load_image = original_load_image
+    test.equal(type(result), "string")
+    test.equal(result:find("Could not read image file", 1, true) ~= nil, true)
+    test.equal(result:find("decode failed", 1, true) ~= nil, true)
   end)
 
   test.it("writes project files after confirmation", function()

@@ -1,5 +1,6 @@
 local context = require "plugins.assistant.tool_context"
 local Tool = require "plugins.assistant.tool"
+local ImageView = require "core.imageview"
 
 ---Filesystem inspection and read-only project tools.
 ---@class assistant.tool.file
@@ -25,6 +26,42 @@ end
 
 local READ_MAX_LINES = 2000
 local READ_MAX_BYTES = 50 * 1024
+local IMAGE_MAX_DIMENSION = 1024
+
+local BASE64_ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
+
+---Base64 encode binary data.
+---@param data string
+---@return string
+local function base64_encode(data)
+  data = tostring(data or "")
+  local out = {}
+  for i = 1, #data, 3 do
+    local a = data:byte(i) or 0
+    local b = data:byte(i + 1) or 0
+    local c = data:byte(i + 2) or 0
+    local triple = a * 65536 + b * 256 + c
+    out[#out + 1] = BASE64_ALPHABET:sub(math.floor(triple / 262144) % 64 + 1, math.floor(triple / 262144) % 64 + 1)
+    out[#out + 1] = BASE64_ALPHABET:sub(math.floor(triple / 4096) % 64 + 1, math.floor(triple / 4096) % 64 + 1)
+    out[#out + 1] = i + 1 <= #data
+      and BASE64_ALPHABET:sub(math.floor(triple / 64) % 64 + 1, math.floor(triple / 64) % 64 + 1)
+      or "="
+    out[#out + 1] = i + 2 <= #data
+      and BASE64_ALPHABET:sub(triple % 64 + 1, triple % 64 + 1)
+      or "="
+    if i % (3 * 4096) == 1 then context.yield_ui() end
+  end
+  context.yield_ui()
+  return table.concat(out)
+end
+
+---Return text field from a structured tool result.
+---@param result any
+---@return string
+local function result_text(result)
+  if type(result) == "table" then return tostring(result.text or result.message or "") end
+  return tostring(result or "")
+end
 
 local function detect_line_ending(text)
   local crlf = text:find("\r\n", 1, true)
@@ -197,6 +234,77 @@ local function truncate_read_output(text, start_line, total_lines, user_limit)
   return output
 end
 
+---Return scaled image dimensions within the configured maximum.
+---@param width integer
+---@param height integer
+---@return integer width
+---@return integer height
+local function scaled_image_size(width, height)
+  width = tonumber(width) or 0
+  height = tonumber(height) or 0
+  local max_dimension = math.max(width, height)
+  if max_dimension <= IMAGE_MAX_DIMENSION then return width, height end
+  local scale = IMAGE_MAX_DIMENSION / max_dimension
+  return math.max(1, math.floor(width * scale + 0.5)), math.max(1, math.floor(height * scale + 0.5))
+end
+
+---Read an image file and return provider-ready attachment metadata.
+---@param absolute string
+---@return table|string result
+local function read_image_file(absolute)
+  local image, load_err = canvas.load_image(absolute)
+  if not image then
+    return "Could not read image file " .. absolute .. ": " .. tostring(load_err or "image load failed")
+  end
+  context.yield_ui()
+  local original_width, original_height = image:get_size()
+  local sent_width, sent_height = scaled_image_size(original_width, original_height)
+  local normalized = image
+  if sent_width ~= original_width or sent_height ~= original_height then
+    normalized = image:scaled(sent_width, sent_height, "nearest")
+    context.yield_ui()
+  end
+  local temp_path = string.format(
+    "%s%sassistant-read-image-%08x.png",
+    os.getenv("TMPDIR") or "/tmp",
+    PATHSEP,
+    math.random(0, 0xffffffff)
+  )
+  local saved, save_err = normalized:save_image(temp_path)
+  if not saved then
+    return "Could not normalize image file " .. absolute .. ": " .. tostring(save_err or "image save failed")
+  end
+  local png_data, read_err = context.read_file(temp_path)
+  os.remove(temp_path)
+  if not png_data then
+    return "Could not read normalized image file " .. absolute .. ": " .. tostring(read_err or "temporary image read failed")
+  end
+  local encoded = base64_encode(png_data)
+  local text = string.format(
+    "Read image file %s [image/png] original %dx%d, sent %dx%d.",
+    absolute,
+    original_width,
+    original_height,
+    sent_width,
+    sent_height
+  )
+  return {
+    text = text,
+    attachments = {
+      {
+        type = "image",
+        mime_type = "image/png",
+        data = encoded,
+        path = absolute,
+        original_width = original_width,
+        original_height = original_height,
+        width = sent_width,
+        height = sent_height
+      }
+    }
+  }
+end
+
 ---Handle matches.
 ---@param line string
 ---@param text string
@@ -349,6 +457,10 @@ function filetools.read(path, offset, limit)
   local absolute, err = context.assert_read_path(path)
   if not absolute then return err end
   context.yield_ui()
+  local is_image = ImageView.is_supported(absolute)
+  if is_image then
+    return read_image_file(absolute)
+  end
   local data, read_err = context.read_file(absolute)
   if not data then return read_err or "" end
   context.yield_ui()
@@ -532,9 +644,9 @@ filetools.tools = {
     callback = filetools.read,
     compact_result = function(call, result)
       local path = call and call.arguments and call.arguments.path
-      return context.compact_provider_text_result(result, "file read: " .. tostring(path or ""))
+      return context.compact_provider_text_result(result_text(result), "file read: " .. tostring(path or ""))
     end,
-    description = "Read the contents of a file. For text files, output is truncated to 2000 lines or 50KB (whichever is hit first). Use offset/limit for large files. When you need the full file, continue with offset until complete.",
+    description = "Read the contents of a file. Supports text files and images (jpg, jpeg, png, gif, webp, bmp, svg, and other Pragtical-supported image formats). Images are sent as attachments. For text files, output is truncated to 2000 lines or 50KB (whichever is hit first). Use offset/limit for large files. When you need the full file, continue with offset until complete.",
     read_only = true,
     requires_approval = read_approval("path"),
     params = {

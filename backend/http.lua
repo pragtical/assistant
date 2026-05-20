@@ -383,11 +383,15 @@ end
 
 ---Add tool result.
 local function add_tool_result(agent, conversation, call, result, status)
+  local provider_messages = agent.tool_result_provider_messages
+    and agent:tool_result_provider_messages(call, result)
+    or { agent:tool_result_provider_message(call, result) }
   conversation:add("tool_result", agent:tool_result_display(call, result, status), {
     meta = {
       call = call,
       status = status,
-      provider_message = agent:tool_result_provider_message(call, result)
+      provider_message = provider_messages[1],
+      provider_messages = provider_messages
     }
   })
 end
@@ -496,6 +500,16 @@ local function first_lines(text, max_lines)
   return output
 end
 
+---Return display text for a tool result value.
+---@param result any
+---@return string text
+local function tool_result_text(result)
+  if type(result) == "table" then
+    return tostring(result.text or result.message or "")
+  end
+  return tostring(result or "")
+end
+
 ---Handle tool activity detail.
 local function tool_activity_detail(name, call, status, result)
   local args = call and call.arguments or {}
@@ -509,9 +523,9 @@ local function tool_activity_detail(name, call, status, result)
   end
   if result ~= nil and result ~= "" then
     if name == "read" then
-      return fenced(first_lines(result, 3), "text")
+      return fenced(first_lines(tool_result_text(result), 3), "text")
     end
-    local text = tostring(result)
+    local text = tool_result_text(result)
     if #text > 12000 then text = text:sub(1, 12000) .. "\n\n... truncated for transcript ..." end
     return fenced(text, "text")
   end
