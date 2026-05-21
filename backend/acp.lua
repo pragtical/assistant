@@ -8,6 +8,7 @@ local Conversation = require "plugins.assistant.conversation"
 local assistant_tools = require "plugins.assistant.tools"
 local tool_context = require "plugins.assistant.tool_context"
 local transport = require "plugins.assistant.backend.transport"
+local Tool = require "plugins.assistant.tool"
 
 ---Agent Client Protocol backend.
 ---@class assistant.backend.AcpBackend : assistant.Backend
@@ -184,7 +185,7 @@ end
 local function normalize_path(path, conversation)
   if not path or path == "" then return nil end
   local absolute = path
-  if not path:match("^/") and not path:match("^%a:[/\\]") then
+  if not common.is_absolute_path(path) then
     absolute = (conversation and conversation.project_dir or ".") .. PATHSEP .. path
   end
   return common.normalize_path(absolute) or absolute
@@ -398,8 +399,7 @@ end
 
 ---Return whether pending interaction is available.
 local function has_pending_interaction(state)
-  for _ in pairs(state.pending_requests or {}) do return true end
-  return false
+  return next(state.pending_requests or {}) ~= nil
 end
 
 ---Handle short path.
@@ -470,12 +470,17 @@ local function add_activity(conversation, text, key)
 end
 
 ---Handle tool activity text.
-local function tool_activity_text(update)
+local function tool_activity_text(update, conversation)
   local call = update.toolCall or update.tool_call or update.call or update
   local title = first_text(call.title, update.title, call.name, call.tool, "ACP tool activity")
   local lines = { title }
-  local path = short_path(activity_path(call) or activity_path(update))
-  if path then table.insert(lines, "Path: " .. path) end
+  local raw_path = activity_path(call) or activity_path(update)
+  local path = short_path(raw_path)
+  if raw_path then
+    table.insert(lines, "Path: " .. Tool.file_link_or_ticked(raw_path, {
+      project_dir = conversation and conversation.project_dir
+    }, nil, path))
+  end
   local status = call.status or update.status
   if status and status ~= "" then table.insert(lines, "Status: " .. tostring(status)) end
   local raw_output = call.rawOutput or call.raw_output or update.rawOutput or update.raw_output
@@ -1173,12 +1178,12 @@ function AcpBackend:handle_update(agent, conversation, msg, state, callback)
           arguments_text = type(call.arguments) == "string" and call.arguments or jsonutil.encode(call.arguments or call.input or {})
         }), { autosave = false })
       else
-        add_activity(conversation, tool_activity_text(update), "tool:" .. tostring(call.toolCallId or call.id or call.title or update.title))
+        add_activity(conversation, tool_activity_text(update, conversation), "tool:" .. tostring(call.toolCallId or call.id or call.title or update.title))
       end
     elseif kind == "tool_call_update" or kind == "toolCallUpdate" then
       set_status(conversation, "working")
       local merged = merged_tool_update(state, update)
-      add_activity(conversation, tool_activity_text(merged), "tool-update:" .. tostring(update.toolCallId or update.id or update.title))
+      add_activity(conversation, tool_activity_text(merged, conversation), "tool-update:" .. tostring(update.toolCallId or update.id or update.title))
     elseif kind == "session_title" or kind == "sessionTitle" then
       if update.title and update.title ~= "" then conversation.title = update.title end
     elseif kind == "available_commands_update" or kind == "availableCommandsUpdate" then

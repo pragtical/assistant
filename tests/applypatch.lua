@@ -74,7 +74,7 @@ test.describe("assistant apply_patch", function()
       {
         path = root,
         absolute_path = function(_, value)
-          if value:match("^/") then return value end
+          if common.is_absolute_path(value) then return value end
           return root .. PATHSEP .. value
         end
       }

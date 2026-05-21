@@ -33,7 +33,7 @@ end
 function context.normalize(path)
   if not path or path == "" then return nil end
   local absolute = path
-  if not path:match("^/") and not path:match("^%a:[/\\]") then
+  if not common.is_absolute_path(path) then
     absolute = core.project_absolute_path(path)
   end
   return common.normalize_path(absolute) or absolute

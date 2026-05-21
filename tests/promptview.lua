@@ -496,14 +496,15 @@ test.describe("assistant prompt view", function()
     view:submit()
 
     local partial_text
-    local appended = false
+    local appended
     local set_text = false
     view.transcript.set_partial_text = function(this, text)
       partial_text = text
       this.partial_text = text
     end
-    view.transcript.append_text = function()
-      appended = true
+    view.transcript.append_text = function(this, text)
+      appended = text
+      this.text = (this.text or "") .. text
     end
     view.transcript.set_text = function()
       set_text = true
@@ -512,9 +513,40 @@ test.describe("assistant prompt view", function()
     callback(true, nil, "stream-only", { partial = true })
 
     test.equal(partial_text, "stream-only")
-    test.equal(appended, false)
+    test.equal(type(appended), "string")
+    test.equal(appended:find("## Assistant", 1, true) ~= nil, true)
     test.equal(set_text, false)
+    test.equal(view.transcript_markdown_text:find("## Assistant", 1, true) ~= nil, true)
     test.equal(view.transcript_markdown_text:find("stream-only", 1, true), nil)
+  end)
+
+  test.it("accumulates delta-only streamed assistant output", function()
+    local agent = Ollama()
+    local callback
+    local view = PromptView({
+      agent = agent,
+      conversation = Conversation(agent, "/tmp"),
+      backend = {
+        send = function(_, _, _, cb)
+          callback = cb
+        end
+      }
+    })
+
+    view.prompt_doc:insert(1, 1, "prompt")
+    view:submit()
+
+    local partial_text
+    view.transcript.set_partial_text = function(_, text)
+      partial_text = text
+    end
+
+    callback(true, nil, "Let me ", { partial = true })
+    callback(true, nil, "take a look ", { partial = true })
+    callback(true, nil, "overview.", { partial = true })
+
+    test.equal(view.pending_assistant.message, "Let me take a look overview.")
+    test.equal(partial_text, "Let me take a look overview.")
   end)
 
   test.it("commits streamed assistant output as markdown when final", function()
@@ -535,6 +567,7 @@ test.describe("assistant prompt view", function()
 
     local partial_text
     local committed
+    local final_set_text
     view.transcript.set_partial_text = function(this, text)
       partial_text = text
       this.partial_text = text
@@ -545,15 +578,21 @@ test.describe("assistant prompt view", function()
       this.text = (this.text or "") .. markdown
       return true
     end
+    view.transcript.set_text = function(this, markdown)
+      final_set_text = markdown
+      this.text = markdown
+    end
 
     callback(true, nil, "hel", { partial = true })
     callback(true, nil, "hello **world**", { done = true })
 
     test.equal(partial_text, "hel")
-    test.equal(type(committed), "string")
-    test.equal(committed:find("## Assistant", 1, true) ~= nil, true)
-    test.equal(committed:find("hello **world**", 1, true) ~= nil, true)
+    test.equal(committed, nil)
+    test.equal(type(final_set_text), "string")
+    test.equal(final_set_text:find("## Assistant", 1, true) ~= nil, true)
+    test.equal(final_set_text:find("hello **world**", 1, true) ~= nil, true)
     test.equal(view.pending_assistant, nil)
+    test.equal(view.transcript_markdown_text:find("## Assistant", 1, true) ~= nil, true)
     test.equal(view.transcript_markdown_text:find("hello **world**", 1, true) ~= nil, true)
   end)
 
@@ -1594,6 +1633,39 @@ test.describe("assistant prompt view", function()
     test.equal(set_text_calls, 0)
   end)
 
+  test.it("force-refreshes plan updates while assistant text is streaming", function()
+    local agent = Codex()
+    local callback
+    local conversation = Conversation(agent, "/tmp")
+    local view = PromptView({
+      agent = agent,
+      conversation = conversation,
+      backend = {
+        send = function(_, _, _, cb)
+          callback = cb
+        end
+      }
+    })
+
+    view.prompt_doc:insert(1, 1, "hello")
+    view:submit()
+    callback(true, nil, "partial", { partial = true })
+    conversation:add("assistant", "### Plan Updated\n\n- [x] Verify all changes\n- [x] Commit changes", {
+      meta = { plan_update = true },
+      autosave = false
+    })
+    callback(true, nil, "", {
+      event = "activity_update",
+      partial = true,
+      force_transcript = true
+    })
+
+    test.not_nil(view.pending_assistant)
+    test.equal(view.pending_assistant.message, "partial")
+    test.equal(view.transcript_markdown_text:find("- [x] Verify all changes", 1, true) ~= nil, true)
+    test.equal(view.transcript_markdown_text:find("- [x] Commit changes", 1, true) ~= nil, true)
+  end)
+
   test.it("adds assistant heading when provider output arrives", function()
     local agent = Codex()
     local callback
@@ -1737,6 +1809,47 @@ test.describe("assistant prompt view", function()
     test.equal(view.conversation.messages[4].message, "Let")
     test.equal(view.conversation.messages[5].role, "tool_call")
     test.equal(view.conversation:to_markdown():find("## Assistant\n\nLet", 1, true) ~= nil, true)
+  end)
+
+  test.it("rebuilds streamed preamble markdown before showing tool activity", function()
+    local old_enter = core.command_view.enter
+    core.command_view.enter = function() end
+
+    local agent = Ollama()
+    local callback
+    local view = PromptView({
+      agent = agent,
+      conversation = Conversation(agent, "/tmp"),
+      backend = {
+        send = function(_, _, _, cb)
+          callback = cb
+        end,
+        resolve_tool_call = function() end
+      }
+    })
+
+    view.prompt_doc:insert(1, 1, "inspect")
+    view:submit()
+    callback(true, nil, "Let me explore ", { partial = true })
+    callback(true, nil, "the project ", { partial = true })
+    callback(true, nil, "to give you a good overview.", { partial = true })
+    view.conversation:add("tool_call", "Tool: read", { autosave = false })
+    callback(true, nil, nil, {
+      event = "tool_call_request",
+      request = {
+        id = "call_1",
+        title = "Approve tool",
+        body = "Tool: read"
+      }
+    })
+
+    core.command_view.enter = old_enter
+
+    local preamble = "Let me explore the project to give you a good overview."
+    test.equal(view.conversation.messages[4].role, "assistant")
+    test.equal(view.conversation.messages[4].message, preamble)
+    test.equal(view.transcript_markdown_text:find("## Assistant\n\n" .. preamble, 1, true) ~= nil, true)
+    test.equal(view.transcript_markdown_text:find("## Assistant\n\nto give you a good overview.", 1, true), nil)
   end)
 
   test.it("does not add an error message for cancelled requests", function()

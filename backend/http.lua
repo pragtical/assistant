@@ -8,6 +8,7 @@ local Backend = require "plugins.assistant.backend"
 local assistant_tools = require "plugins.assistant.tools"
 local permission = require "plugins.assistant.permission"
 local stream_state = require "plugins.assistant.stream_state"
+local Tool = require "plugins.assistant.tool"
 
 ---HTTP backend for OpenAI-compatible chat and Responses providers.
 ---@class assistant.backend.HttpBackend : assistant.Backend
@@ -561,7 +562,7 @@ local function tool_activity_detail(name, call, status, result)
 end
 
 ---Handle tool activity text.
-local function tool_activity_text(agent, call, status, result)
+local function tool_activity_text(agent, call, status, result, activity_context)
   local resolved = agent.resolve_tool_name and agent:resolve_tool_name(call and call.name) or (call and call.name)
   if call then call.name = resolved end
   local lines = { tool_activity_label(call) }
@@ -571,8 +572,8 @@ local function tool_activity_text(agent, call, status, result)
   if type(args) == "table" then
     if args.cmd or args.command then table.insert(lines, "Command: `" .. tostring(args.cmd or args.command) .. "`") end
     if args.workdir or args.cwd then table.insert(lines, "Cwd: `" .. tostring(args.workdir or args.cwd) .. "`") end
-    if args.path then table.insert(lines, "Path: `" .. tostring(args.path) .. "`") end
-    if args.directory then table.insert(lines, "Directory: `" .. tostring(args.directory) .. "`") end
+    if args.path then table.insert(lines, "Path: " .. Tool.file_link_or_ticked(args.path, activity_context)) end
+    if args.directory then table.insert(lines, "Directory: " .. Tool.relative_path_or_ticked(args.directory, activity_context)) end
     if args.url then table.insert(lines, "URL: `" .. tostring(args.url) .. "`") end
   end
   if status then table.insert(lines, "Status: " .. tostring(status)) end
@@ -598,11 +599,12 @@ local function add_tool_activity(agent, conversation, call, status, result)
   local id = call and (call.id or call.call_id or tool_call_signature(agent, call)) or name
   local tool = agent.tools and agent.tools[name] or nil
   local activity_context = {
-    verbose_tool_calling = verbose_tool_calling()
+    verbose_tool_calling = verbose_tool_calling(),
+    project_dir = conversation and conversation.project_dir
   }
   local verbose = tool and tool.activity_markdown
     and tool.activity_markdown(call, status, result, activity_context)
-    or tool_activity_text(agent, call, status, result)
+    or tool_activity_text(agent, call, status, result, activity_context)
   local compact = tool and tool.compact_activity_markdown
     and tool.compact_activity_markdown(call, status, result, activity_context)
     or nil
@@ -1211,6 +1213,17 @@ function HttpBackend:send(agent, conversation, callback)
     end
     callback(true, nil, nil, { event = "finalize_pending_assistant" })
     local index = 1
+    local function notify_activity_update(options)
+      if type(options) ~= "table" then options = nil end
+      local meta = {
+        event = "activity_update",
+        partial = true
+      }
+      for key, value in pairs(options or {}) do
+        meta[key] = value
+      end
+      callback(true, nil, nil, meta)
+    end
 
     ---Handle ask next.
     local function ask_next()
@@ -1252,6 +1265,7 @@ function HttpBackend:send(agent, conversation, callback)
           autosave = false
         })
         add_tool_activity(agent, conversation, call, "running")
+        notify_activity_update({ force_transcript = true })
         local explanation = call.arguments and call.arguments.explanation or nil
         local items, plan_err = normalize_plan_items(call.arguments and call.arguments.plan)
         if items and explanation ~= nil and type(explanation) ~= "string" then
@@ -1266,6 +1280,7 @@ function HttpBackend:send(agent, conversation, callback)
             meta = { plan_update = true },
             autosave = false
           })
+          notify_activity_update({ force_transcript = true })
           local result = "plan updated"
           if is_plan_mode(agent, conversation) then
             result = result .. "; if the plan is decision-complete, respond next with the final Markdown plan and do not call more tools"
@@ -1274,6 +1289,7 @@ function HttpBackend:send(agent, conversation, callback)
         else
           add_tool_result(agent, conversation, call, "plan update error: " .. tostring(plan_err), "error")
         end
+        notify_activity_update({ force_transcript = true })
         local continue = function()
           index = index + 1
           ask_next()
@@ -1332,6 +1348,7 @@ function HttpBackend:send(agent, conversation, callback)
         }
       })
       add_tool_activity(agent, conversation, call, "requested")
+      notify_activity_update()
       if consecutive_tool_call_count > 1 then
         add_tool_result(
           agent,
@@ -1360,24 +1377,24 @@ function HttpBackend:send(agent, conversation, callback)
         and agent.classify_tool_call
         and agent:classify_tool_call(call, conversation).category == "read_only"
       then
-        self:resolve_tool_call(agent, conversation, { id = call.id or call.call_id or tostring(index) }, "allow", function() end)
+        self:resolve_tool_call(agent, conversation, { id = call.id or call.call_id or tostring(index) }, "allow", notify_activity_update)
         return
       end
       if agent.tool_requires_approval and not agent:tool_requires_approval(call) then
-        self:resolve_tool_call(agent, conversation, { id = call.id or call.call_id or tostring(index) }, "allow", function() end)
+        self:resolve_tool_call(agent, conversation, { id = call.id or call.call_id or tostring(index) }, "allow", notify_activity_update)
         return
       end
       if resolved_name == "exec_command"
         and conversation.command_prefix_approved
         and conversation:command_prefix_approved(command_tool_text(call))
       then
-        self:resolve_tool_call(agent, conversation, { id = call.id or call.call_id or tostring(index) }, "allow", function() end)
+        self:resolve_tool_call(agent, conversation, { id = call.id or call.call_id or tostring(index) }, "allow", notify_activity_update)
         return
       end
       if conversation.tool_approved
         and conversation:tool_approved(resolved_name)
       then
-        self:resolve_tool_call(agent, conversation, { id = call.id or call.call_id or tostring(index) }, "allow", function() end)
+        self:resolve_tool_call(agent, conversation, { id = call.id or call.call_id or tostring(index) }, "allow", notify_activity_update)
         return
       end
       local request_options = {
@@ -1588,7 +1605,7 @@ function HttpBackend:send(agent, conversation, callback)
       on_done = function(ok, err, _, info)
         self:finish_request()
         agent:set_loading(false)
-        local info = info or response_info
+        info = info or response_info
         if ok and not is_http_error(info) then
           if pending ~= "" then
             flush_stream_pending(agent, pending, function(data)

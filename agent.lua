@@ -533,14 +533,13 @@ function Agent:compact_provider_messages(messages, conversation)
         compacted_message.omitted_tool_call_ids = nil
         table.insert(compacted, compacted_message)
       end
-    elseif type(compacted_message) == "table"
-      and compacted_message.role == "tool"
-      and skipped_tool_result_ids[tostring(compacted_message.tool_call_id or "")]
-    then
-      -- The matching historical call was summarized as text, so this tool-role
-      -- message would violate chat tool-call ordering if kept.
     elseif compacted_message ~= nil then
-      table.insert(compacted, compacted_message)
+      local skip_tool_result = type(compacted_message) == "table"
+        and compacted_message.role == "tool"
+        and skipped_tool_result_ids[tostring(compacted_message.tool_call_id or "")]
+      if not skip_tool_result then
+        table.insert(compacted, compacted_message)
+      end
     end
   end
   return compacted

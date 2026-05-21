@@ -8,7 +8,7 @@ local Conversation = require "plugins.assistant.conversation"
 local Ollama = require "plugins.assistant.agent.ollama"
 local PromptView = require "plugins.assistant.promptview"
 
-dofile("init.lua")
+local assistant = dofile("init.lua")
 
 local root = assistant_test_temp_path("assistant-init")
 
@@ -42,7 +42,7 @@ test.describe("assistant plugin init", function()
       {
         path = root,
         absolute_path = function(_, path)
-          if path:match("^/") then return path end
+          if common.is_absolute_path(path) then return path end
           return root .. PATHSEP .. path
         end,
         path_belongs_to = function(_, filename)
@@ -72,6 +72,14 @@ test.describe("assistant plugin init", function()
       has_value(keymap.get_bindings("assistant-conversation:insert-file"), "ctrl+alt+u"),
       true
     )
+  end)
+
+  test.it("focuses the prompt editor when opening a conversation", function()
+    local view = assistant.start_conversation("ollama")
+
+    test.not_nil(view)
+    test.equal(view.focused_child, view.prompt)
+    test.equal(core.active_view, view.prompt)
   end)
 
   test.it("inserts selected project file path into prompt", function()

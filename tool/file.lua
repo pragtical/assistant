@@ -27,8 +27,8 @@ end
 ---Return compact status suffix.
 ---@param status any
 ---@return string
-local function status(status)
-  return Tool.status_suffix(status)
+local function status_suffix(value)
+  return Tool.status_suffix(value)
 end
 
 ---Return a compact target from common file arguments.
@@ -43,9 +43,13 @@ end
 ---@param label string
 ---@return fun(call: table|nil, status: string|nil): string
 local function compact_file_activity(label)
-  return function(call, status_value)
+  return function(call, status_value, _, activity_context)
+    local args = call and call.arguments or {}
     local value = target(call)
-    return "**" .. label .. "**: " .. (value ~= "" and Tool.ticked(value) or "`target`") .. status(status_value)
+    local rendered = args.directory
+      and Tool.relative_path_or_ticked(value, activity_context, "target")
+      or Tool.file_link_or_ticked(value, activity_context, "target")
+    return "**" .. label .. "**: " .. rendered .. status_suffix(status_value)
   end
 end
 
@@ -54,7 +58,7 @@ end
 ---@param status_value string|nil
 ---@param result any
 ---@return string
-local function compact_write_activity(call, status_value, result)
+local function compact_write_activity(call, status_value, result, activity_context)
   local args = call and call.arguments or {}
   local value = target(call)
   local exists = false
@@ -64,7 +68,7 @@ local function compact_write_activity(call, status_value, result)
   local label = (result_text:find("^created:", 1, false) or (status_value == "requested" and not exists))
     and "Adding"
     or "Writing"
-  local line = "**" .. label .. "**: " .. (value ~= "" and Tool.ticked(value) or "`file`") .. status(status_value)
+  local line = "**" .. label .. "**: " .. Tool.file_link_or_ticked(value, activity_context, "file") .. status_suffix(status_value)
   if status_value ~= "requested" then return line end
   local content = tostring(args.content or "")
   if content == "" then return line end
@@ -121,10 +125,10 @@ end
 ---@param call table|nil
 ---@param status_value string|nil
 ---@return string
-local function compact_edit_activity(call, status_value)
+local function compact_edit_activity(call, status_value, _, activity_context)
   local args = call and call.arguments or {}
   local value = target(call)
-  local line = "**Editing**: " .. (value ~= "" and Tool.ticked(value) or "`file`") .. status(status_value)
+  local line = "**Editing**: " .. Tool.file_link_or_ticked(value, activity_context, "file") .. status_suffix(status_value)
   local diff = status_value == "requested" and edit_diff(args) or nil
   return diff and (line .. "\n\n" .. diff) or line
 end
@@ -134,14 +138,14 @@ end
 ---@param status_value string|nil
 ---@param result any
 ---@return string
-local function read_activity_markdown(call, status_value, result)
+local function read_activity_markdown(call, status_value, result, activity_context)
   local args = call and call.arguments or {}
   local lines = {
     "Inspecting project",
     "",
     "Tool: `read`"
   }
-  if args.path then table.insert(lines, "Path: `" .. tostring(args.path) .. "`") end
+  if args.path then table.insert(lines, "Path: " .. Tool.file_link_or_ticked(args.path, activity_context)) end
   if status_value then table.insert(lines, "Status: " .. tostring(status_value)) end
   local text = Tool.result_text(result)
   if text ~= "" then

@@ -548,7 +548,6 @@ function Codex:format_approval_response(request, decision)
     decision = "decline"
   end
   if decision == "acceptWithExecpolicyAmendment" and request.kind == "command" then
-    local raw = request.raw or {}
     return {
       decision = decision,
       commandActions = request.command_actions,

@@ -185,7 +185,8 @@ misctools.tools = {
     description = table.concat({
       "Updates the task plan.",
       "Provide an optional explanation and a list of plan items, each with a step and status.",
-      "At most one step can be in_progress at a time."
+      "At most one step can be in_progress at a time.",
+      "If the task is complete and a plan is active, call update_plan before the final response with every item marked completed."
     }, "\n"),
     read_only = true,
     additional_properties = false,

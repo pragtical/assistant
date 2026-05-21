@@ -397,6 +397,8 @@ local function open_prompt_view(view)
   local node = core.root_view:get_active_node_default()
   node:add_view(view)
   core.root_view.root_node:update_layout()
+  view.focused_child = view.prompt
+  core.set_active_view(view.prompt)
   return view
 end
 

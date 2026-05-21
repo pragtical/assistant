@@ -600,13 +600,44 @@ function PromptView:update_streaming_transcript()
 
   local now = system.get_time()
   self.pending_streaming_transcript_text = self.pending_assistant.message or ""
+  local force_sentence_flush = self.pending_streaming_transcript_text:find("[%.%!%?]%s*$") ~= nil
   if self.last_streaming_transcript_refresh
     and now - self.last_streaming_transcript_refresh < STREAMING_TRANSCRIPT_REFRESH_INTERVAL
+    and not force_sentence_flush
   then
     return true
   end
 
   self:flush_streaming_transcript()
+  return true
+end
+
+---Append the assistant heading before temporary streamed text.
+---@return boolean appended
+function PromptView:ensure_streaming_assistant_heading()
+  if self.streaming_assistant_heading_committed
+    or not self.pending_assistant
+    or self.transcript_mode ~= "rendered"
+    or not (self.transcript and self.transcript.append_text)
+  then
+    return false
+  end
+
+  local previous = self.transcript_markdown_text or ""
+  local heading = "## Assistant\n\n"
+  local markdown = (previous ~= "" and "\n\n" or "") .. heading
+  self.streaming_assistant_base_markdown = previous
+  self.transcript:append_text(markdown)
+  self.transcript_markdown_text = previous .. markdown
+  -- The rendered view now contains a temporary assistant heading, but the
+  -- streamed body is held by MarkdownView as partial text rather than in
+  -- transcript_markdown_text. Do not cache a normal conversation snapshot here:
+  -- it would claim the cached markdown already contains the pending assistant
+  -- body and later incremental refreshes could append only a tail fragment.
+  self.transcript_snapshot = nil
+  self.force_transcript_set = true
+  self.pending_transcript_snapshot = nil
+  self.streaming_assistant_heading_committed = true
   return true
 end
 
@@ -623,6 +654,7 @@ function PromptView:flush_streaming_transcript()
     self.streaming_transcript_follow_bottom = view_is_at_bottom(self.transcript)
   end
 
+  self:ensure_streaming_assistant_heading()
   self.transcript:set_partial_text(self.pending_streaming_transcript_text)
   self.pending_streaming_transcript_text = nil
   self.last_streaming_transcript_refresh = system.get_time()
@@ -646,14 +678,30 @@ function PromptView:commit_streaming_transcript(assistant_message)
   end
 
   local previous = self.transcript_markdown_text or ""
-  local final_markdown = previous ~= "" and (previous .. "\n\n" .. markdown) or markdown
+  local appended_markdown
+  if self.streaming_assistant_heading_committed then
+    previous = self.streaming_assistant_base_markdown or ""
+    appended_markdown = (previous ~= "" and "\n\n" or "") .. markdown
+  else
+    appended_markdown = (previous ~= "" and "\n\n" or "") .. markdown
+  end
+  local final_markdown = previous .. appended_markdown
   local follow_bottom = view_is_at_bottom(self.transcript)
-  self.transcript:commit_partial_text((previous ~= "" and "\n\n" or "") .. markdown)
+  if self.streaming_assistant_heading_committed then
+    if self.transcript.clear_partial_text then
+      self.transcript:clear_partial_text()
+    end
+    self.transcript:set_text(final_markdown)
+  else
+    self.transcript:commit_partial_text(appended_markdown)
+  end
   self.transcript_markdown_text = final_markdown
   self.transcript_snapshot = self:make_transcript_snapshot()
   self.pending_transcript_snapshot = nil
   self.pending_streaming_transcript_text = nil
   self.streaming_transcript_follow_bottom = nil
+  self.streaming_assistant_heading_committed = nil
+  self.streaming_assistant_base_markdown = nil
   self.last_streaming_transcript_refresh = nil
   if follow_bottom then
     scroll_view_to_bottom(self.transcript)
@@ -891,6 +939,24 @@ function PromptView:dispatch_prompt_turn(text)
     end
     return self.pending_assistant
   end
+  ---Merge a partial assistant response that may be either accumulated text or a delta.
+  ---@param current string
+  ---@param incoming string
+  ---@return string
+  local function merge_partial_response(current, incoming)
+    current = tostring(current or "")
+    incoming = tostring(incoming or "")
+    if current == "" or incoming == "" then
+      return incoming ~= "" and incoming or current
+    end
+    if incoming:sub(1, #current) == current then
+      return incoming
+    end
+    if current:sub(-#incoming) == incoming then
+      return current
+    end
+    return current .. incoming
+  end
   ---Handle finalize pending assistant.
   local function finalize_pending_assistant(force)
     if self.pending_assistant and (force or self.pending_assistant.message == "") then
@@ -899,6 +965,8 @@ function PromptView:dispatch_prompt_turn(text)
     self.pending_assistant = nil
     self.pending_streaming_transcript_text = nil
     self.streaming_transcript_follow_bottom = nil
+    self.streaming_assistant_heading_committed = nil
+    self.streaming_assistant_base_markdown = nil
     self.last_streaming_transcript_refresh = nil
     if self.transcript and self.transcript.clear_partial_text then
       self.transcript:clear_partial_text()
@@ -961,7 +1029,9 @@ function PromptView:dispatch_prompt_turn(text)
       return
     end
     if ok and meta and meta.event == "activity_update" then
-      if self.pending_assistant or self.pending_streaming_transcript_text then
+      if meta.force_transcript then
+        self:refresh()
+      elseif self.pending_assistant or self.pending_streaming_transcript_text then
         self:refresh_controls()
       else
         self:refresh()
@@ -981,7 +1051,11 @@ function PromptView:dispatch_prompt_turn(text)
         return
       end
       ensure_pending_assistant()
-      self.pending_assistant.message = response or ""
+      if meta and meta.partial and not meta.done then
+        self.pending_assistant.message = merge_partial_response(self.pending_assistant.message, response)
+      else
+        self.pending_assistant.message = response or ""
+      end
       if meta and meta.usage then
         self.conversation:set_usage(meta.usage)
       end
@@ -1006,6 +1080,8 @@ function PromptView:dispatch_prompt_turn(text)
         self.pending_assistant = nil
         self.pending_streaming_transcript_text = nil
         self.streaming_transcript_follow_bottom = nil
+        self.streaming_assistant_heading_committed = nil
+        self.streaming_assistant_base_markdown = nil
         self.last_streaming_transcript_refresh = nil
         if self.transcript and self.transcript.clear_partial_text then
           self.transcript:clear_partial_text()
@@ -1021,6 +1097,8 @@ function PromptView:dispatch_prompt_turn(text)
       self.pending_assistant = nil
       self.pending_streaming_transcript_text = nil
       self.streaming_transcript_follow_bottom = nil
+      self.streaming_assistant_heading_committed = nil
+      self.streaming_assistant_base_markdown = nil
       self.last_streaming_transcript_refresh = nil
       if self.transcript and self.transcript.clear_partial_text then
         self.transcript:clear_partial_text()
@@ -1350,6 +1428,14 @@ function PromptView:cancel()
   self.pending_user_input_request = nil
   self.pending_approval_request = nil
   self.pending_tool_call_request = nil
+  self.pending_streaming_transcript_text = nil
+  self.streaming_transcript_follow_bottom = nil
+  self.streaming_assistant_heading_committed = nil
+  self.streaming_assistant_base_markdown = nil
+  self.last_streaming_transcript_refresh = nil
+  if self.transcript and self.transcript.clear_partial_text then
+    self.transcript:clear_partial_text()
+  end
   self:refresh()
 end
 

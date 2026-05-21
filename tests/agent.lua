@@ -1577,6 +1577,7 @@ test.describe("assistant agent", function()
     end
 
     local schema = tool.parameters
+    test.equal(tool.description:find("before the final response", 1, true) ~= nil, true)
     test.same(schema.required, { "plan" })
     test.equal(schema.additionalProperties, false)
     test.not_nil(schema.properties.explanation)

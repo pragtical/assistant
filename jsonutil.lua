@@ -70,7 +70,7 @@ local function encode_table(value, state, stack)
       maybe_yield(state)
     end
     if count ~= #value then error("invalid table: sparse array") end
-    for i, item in ipairs(value) do
+    for _, item in ipairs(value) do
       result[#result + 1] = encode_value(item, state, stack)
     end
     stack[value] = nil

@@ -1080,13 +1080,23 @@ test.describe("assistant http backend", function()
     local conversation = Conversation(agent, "project")
     local backend = HttpBackend()
     local response
+    local plan_activity_updates = 0
 
     backend:send(agent, conversation, function(ok, _, text, meta)
+      if ok and meta and meta.event == "activity_update" then
+        if conversation.messages[#conversation.messages]
+          and conversation.messages[#conversation.messages].meta
+          and conversation.messages[#conversation.messages].meta.plan_update
+        then
+          plan_activity_updates = plan_activity_updates + 1
+        end
+      end
       if ok and meta and meta.done then response = text end
     end)
 
     http.post = old_post
     test.equal(response, "done")
+    test.equal(plan_activity_updates > 0, true)
     test.equal(conversation.assistant_plan.items[2].status, "in_progress")
     local plan_markdown = conversation.messages[#conversation.messages - 1].message
     test.equal(plan_markdown:find("Plan Updated", 1, true) ~= nil, true)
@@ -1171,8 +1181,17 @@ test.describe("assistant http backend", function()
     local conversation = Conversation(agent, "project")
     local backend = HttpBackend()
     local response
+    local plan_activity_updates = 0
 
     backend:send(agent, conversation, function(ok, _, text, meta)
+      if ok and meta and meta.event == "activity_update" then
+        if conversation.messages[#conversation.messages]
+          and conversation.messages[#conversation.messages].meta
+          and conversation.messages[#conversation.messages].meta.plan_update
+        then
+          plan_activity_updates = plan_activity_updates + 1
+        end
+      end
       if ok and meta and meta.done then response = text end
     end)
 
@@ -1180,6 +1199,7 @@ test.describe("assistant http backend", function()
     restore_background_threads()
     test.equal(calls, 2)
     test.equal(response, "done")
+    test.equal(plan_activity_updates > 0, true)
     test.equal(conversation.assistant_plan.items[2].status, "in_progress")
     test.equal(second_body.messages[#second_body.messages].role, "tool")
     test.equal(second_body.messages[#second_body.messages].content:find("plan updated", 1, true) ~= nil, true)
@@ -2902,10 +2922,13 @@ test.describe("assistant http backend", function()
     local backend = HttpBackend()
     local asked = false
     local response
+    local activity_updates = 0
 
     backend:send(agent, conversation, function(ok, _, text, meta)
       if ok and meta and meta.event == "tool_call_request" then
         asked = true
+      elseif ok and meta and meta.event == "activity_update" then
+        activity_updates = activity_updates + 1
       elseif ok and meta and meta.done then
         response = text
       end
@@ -2915,6 +2938,7 @@ test.describe("assistant http backend", function()
     restore_background_threads()
     common.rm(root, true)
     test.equal(asked, false)
+    test.equal(activity_updates >= 2, true)
     test.equal(response, "listed")
     test.equal(conversation.messages[#conversation.messages].role, "tool_result")
     test.equal(conversation.messages[#conversation.messages].message:find("outside.txt", 1, true) ~= nil, true)

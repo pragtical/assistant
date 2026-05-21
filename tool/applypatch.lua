@@ -28,11 +28,11 @@ end
 ---@param status string|nil
 ---@param result any
 ---@return string
-local function compact_apply_patch_activity(call, status, result)
+local function compact_apply_patch_activity(call, status, _result, activity_context)
   local args = call and call.arguments or {}
   local patch = tostring(args.patch or "")
   local path = first_patch_path(patch)
-  local line = "**Patching**: " .. (path ~= "" and Tool.ticked(path) or "`files`") .. Tool.status_suffix(status)
+  local line = "**Patching**: " .. Tool.file_link_or_ticked(path, activity_context, "files") .. Tool.status_suffix(status)
   if patch ~= "" and (status == "requested" or status == "running") then
     return line .. "\n\n" .. Tool.fenced(patch, "diff")
   end
@@ -44,7 +44,7 @@ end
 ---@param status string|nil
 ---@param result any
 ---@return string
-local function apply_patch_activity(call, status, result)
+local function apply_patch_activity(call, status, result, activity_context)
   local args = call and call.arguments or {}
   local patch = tostring(args.patch or "")
   local lines = {
@@ -53,7 +53,7 @@ local function apply_patch_activity(call, status, result)
     "Tool: `apply_patch`"
   }
   local path = first_patch_path(patch)
-  if path ~= "" then table.insert(lines, "Path: `" .. path .. "`") end
+  if path ~= "" then table.insert(lines, "Path: " .. Tool.file_link_or_ticked(path, activity_context)) end
   if status then table.insert(lines, "Status: " .. tostring(status)) end
   if patch ~= "" and (status == "requested" or status == "running" or result == nil or result == "") then
     table.insert(lines, "")
@@ -704,7 +704,7 @@ local function project_file_path(project_dir, path)
   if not path then return nil end
   local root = common.normalize_path(project_dir) or project_dir
   local absolute = path
-  if not absolute:match("^/") and not absolute:match("^%a:[/\\]") then
+  if not common.is_absolute_path(absolute) then
     absolute = root .. PATHSEP .. absolute
   end
   absolute = common.normalize_path(absolute) or absolute

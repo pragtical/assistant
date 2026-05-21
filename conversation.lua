@@ -4,6 +4,7 @@ local config = require "core.config"
 local json = require "core.json"
 local jsonutil = require "plugins.assistant.jsonutil"
 local permission = require "plugins.assistant.permission"
+local Tool = require "plugins.assistant.tool"
 local Object = require "core.object"
 
 ---Project-local assistant conversation state and persistence.
@@ -231,19 +232,21 @@ local function activity_status(status)
   return status ~= "" and " (" .. status .. ")" or ""
 end
 
----Wrap an activity target in backticks.
+---Wrap an activity target in backticks, or link existing files.
 ---@param value string|nil
 ---@param fallback string
+---@param project_dir string|nil
 ---@return string
-local function activity_target(value, fallback)
+local function activity_target(value, fallback, project_dir)
   value = tostring(value or "")
-  return "`" .. (value ~= "" and value or fallback) .. "`"
+  return Tool.file_link_or_ticked(value, { project_dir = project_dir }, fallback)
 end
 
 ---Return fallback compact Markdown for an activity message.
 ---@param msg table
+---@param project_dir string|nil
 ---@return string
-local function compact_activity_markdown(msg)
+local function compact_activity_markdown(msg, project_dir)
   local text = tostring(msg and msg.message or "")
   if text == "" then return nil end
   if msg.meta and msg.meta.compact_activity_markdown then
@@ -264,25 +267,29 @@ local function compact_activity_markdown(msg)
 
   if text:find("^Running command", 1, false) then
     if tool then
-      local line = "**Running command**: " .. activity_target(command, "command")
-      if cwd and cwd ~= "" then line = line .. " in " .. activity_target(cwd, "cwd") end
+      local line = "**Running command**: " .. Tool.ticked(command or "command")
+      if cwd and cwd ~= "" then line = line .. " in " .. Tool.ticked(cwd) end
       return line .. activity_status(status)
     end
-    return "**Running**: " .. activity_target(command, "command") .. activity_status(status)
+    return "**Running**: " .. Tool.ticked(command or "command") .. activity_status(status)
   end
 
   if text:find("^Editing files", 1, false) then
     local label = tool and "**Patching**: " or "**Editing**: "
-    local line = label .. activity_target(path, "file") .. activity_status(status)
+    local line = label .. activity_target(path, "file", project_dir) .. activity_status(status)
     return diff and (line .. "\n\n" .. diff) or line
   end
 
   if text:find("^Inspecting project", 1, false) then
     if tool == "read" then
-      return "**Reading**: " .. activity_target(path, "path") .. activity_status(status)
+      return "**Reading**: " .. activity_target(path, "path", project_dir) .. activity_status(status)
     end
     local target = path or activity_field(text, "Directory") or activity_field(text, "Query")
-    return "**Inspecting project**: " .. activity_target(target, "target") .. activity_status(status)
+    local directory = activity_field(text, "Directory")
+    local rendered = directory
+      and Tool.relative_path_or_ticked(target, { project_dir = project_dir }, "target")
+      or activity_target(target, "target", project_dir)
+    return "**Inspecting project**: " .. rendered .. activity_status(status)
   end
 
   if text:find("^Searching web", 1, false) then
@@ -294,9 +301,9 @@ local function compact_activity_markdown(msg)
     return "**Calling " .. tostring(tool or "tool") .. "**:" .. activity_status(status)
   end
 
-  local title, rest = text:match("^([^\n]+)\n(.+)$")
+  local title = text:match("^([^\n]+)\n.+$")
   if title and (path or status) and not title:find(": ", 1, true) then
-    local target = path and path ~= "" and (" " .. activity_target(path, "file")) or ""
+    local target = path and path ~= "" and (" " .. activity_target(path, "file", project_dir)) or ""
     local line = "**" .. title .. "**:" .. target .. activity_status(status)
     return diff and (line .. "\n\n" .. diff) or line
   end
@@ -744,7 +751,8 @@ local function active_plan_message(plan)
   local has_open_item = false
   local lines = {
     "Current task plan.",
-    "This plan is still active; continue using it as task state until every item is completed."
+    "This plan is still active; continue using it as task state until every item is completed.",
+    "Before your final response, if the task is complete, call update_plan with every item marked completed."
   }
   if type(plan.explanation) == "string" and plan.explanation ~= "" then
     table.insert(lines, "")
@@ -778,7 +786,7 @@ function Conversation:message_to_markdown(msg)
     if markdown then return markdown end
   end
   if msg.role == "activity" and not verbose_activity() then
-    return compact_activity_markdown(msg)
+    return compact_activity_markdown(msg, self.project_dir)
   end
   local label = msg.role:gsub("_", " "):gsub("^%l", string.upper)
   if msg.role == "error" or msg.role == "tool_call" or msg.role == "tool_result" then

@@ -73,7 +73,7 @@ test.describe("assistant tools", function()
       {
         path = root,
         absolute_path = function(_, path)
-          if path:match("^/") then return path end
+          if common.is_absolute_path(path) then return path end
           return root .. PATHSEP .. path
         end
       }
@@ -93,6 +93,20 @@ test.describe("assistant tools", function()
     test.equal(
       read_tool.compact_activity_markdown({ arguments = { path = "main.c" } }, "completed", ""),
       "**Reading**: `main.c` (completed)"
+    )
+    test.equal(
+      read_tool.compact_activity_markdown({ arguments = { path = "sample.txt" } }, "completed", ""),
+      "**Reading**: [sample.txt](<sample.txt>) (completed)"
+    )
+    test.equal(
+      read_tool.compact_activity_markdown({ arguments = { path = root .. PATHSEP .. "sample.txt" } }, "completed", ""),
+      "**Reading**: [sample.txt](<sample.txt>) (completed)"
+    )
+    test.equal(
+      agent.tools.list.compact_activity_markdown({ arguments = { directory = root } }, "completed", "", {
+        project_dir = root
+      }),
+      "**Inspecting project**: `" .. common.basename(root) .. "` (completed)"
     )
     test.equal(
       exec_tool.compact_activity_markdown({ name = "exec_command", arguments = { cmd = "make test", workdir = "project" } }, "running", ""),
@@ -140,7 +154,7 @@ test.describe("assistant tools", function()
         content = "replacement\n"
       }
     }, "requested", "")
-    test.equal(write_activity:find("**Writing**: `sample.txt` (requested)", 1, true) ~= nil, true)
+    test.equal(write_activity:find("**Writing**: [sample.txt](<sample.txt>) (requested)", 1, true) ~= nil, true)
     test.equal(write_activity:find("+replacement", 1, true) ~= nil, true)
 
     local completed_write_activity = write_tool.compact_activity_markdown({
@@ -149,7 +163,7 @@ test.describe("assistant tools", function()
         content = "replacement\n"
       }
     }, "completed", "replaced: sample.txt")
-    test.equal(completed_write_activity, "**Writing**: `sample.txt` (completed)")
+    test.equal(completed_write_activity, "**Writing**: [sample.txt](<sample.txt>) (completed)")
   end)
 
   test.after_each(function()
@@ -353,7 +367,7 @@ test.describe("assistant tools", function()
       {
         path = child,
         absolute_path = function(_, path)
-          if path:match("^/") then return path end
+          if common.is_absolute_path(path) then return path end
           return child .. PATHSEP .. path
         end
       }

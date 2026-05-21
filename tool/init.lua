@@ -34,7 +34,9 @@
 ---@field compact_activity_markdown function|nil
 ---@field result_is_successful function|nil
 ---@field additional_properties boolean|nil
+local core = require "core"
 local json = require "core.json"
+local common = require "core.common"
 local jsonutil = require "plugins.assistant.jsonutil"
 local history_normalizer = require "plugins.assistant.history_normalizer"
 
@@ -77,6 +79,105 @@ end
 function Tool.ticked(value)
   value = tostring(value or "")
   return value ~= "" and "`" .. value .. "`" or ""
+end
+
+---Escape a Markdown link label.
+---@param value any
+---@return string
+function Tool.markdown_link_label(value)
+  return tostring(value or ""):gsub("\\", "\\\\"):gsub("%[", "\\["):gsub("%]", "\\]")
+end
+
+---Return an absolute path candidate for a display path.
+---@param value string
+---@param context table|nil
+---@return string
+function Tool.absolute_path(value, context)
+  value = tostring(value or "")
+  if value == "" then return value end
+  if common.is_absolute_path(value) then
+    return common.normalize_path(value) or value
+  end
+  local project_dir = context and context.project_dir
+  if type(project_dir) == "string" and project_dir ~= "" then
+    return common.normalize_path(project_dir .. PATHSEP .. value) or (project_dir .. PATHSEP .. value)
+  end
+  local root = core.root_project and core.root_project()
+  if root then
+    local absolute = core.project_absolute_path(value)
+    return common.normalize_path(absolute) or absolute
+  end
+  return common.normalize_path(value) or value
+end
+
+---Return whether a path points to an existing file.
+---@param path string
+---@return boolean
+function Tool.is_file_path(path)
+  local info = system.get_file_info(path)
+  return info and info.type == "file" or false
+end
+
+---Return a project-relative path for a file path when possible.
+---@param value string
+---@param absolute string
+---@param context table|nil
+---@return string|nil
+function Tool.project_relative_file_path(value, absolute, context)
+  value = tostring(value or "")
+  absolute = tostring(absolute or "")
+  if value == "" then return nil end
+  if not common.is_absolute_path(value) then return value end
+  local roots = {}
+  if context and type(context.project_dir) == "string" and context.project_dir ~= "" then
+    table.insert(roots, context.project_dir)
+  end
+  for _, project in ipairs(core.projects or {}) do
+    if type(project) == "table" and type(project.path) == "string" and project.path ~= "" then
+      table.insert(roots, project.path)
+    end
+  end
+  for _, root in ipairs(roots) do
+    root = common.normalize_path(root) or root
+    if absolute == root or common.path_belongs_to(absolute, root) then
+      return common.relative_path(root, absolute)
+    end
+  end
+  return nil
+end
+
+---Return a Markdown link for existing files, otherwise a backticked path.
+---@param value any
+---@param context table|nil
+---@param fallback string|nil
+---@param label string|nil
+---@return string
+function Tool.file_link_or_ticked(value, context, fallback, label)
+  value = tostring(value or "")
+  if value == "" then return Tool.ticked(fallback or "file") end
+  local absolute = Tool.absolute_path(value, context)
+  if absolute ~= "" and Tool.is_file_path(absolute) then
+    local relative = Tool.project_relative_file_path(value, absolute, context)
+    local target = relative or absolute
+    return "[" .. Tool.markdown_link_label(label or relative or value) .. "](<" .. target .. ">)"
+  end
+  return Tool.ticked(label or value)
+end
+
+---Return a backticked path with project-relative display when possible.
+---@param value any
+---@param context table|nil
+---@param fallback string|nil
+---@return string
+function Tool.relative_path_or_ticked(value, context, fallback)
+  value = tostring(value or "")
+  if value == "" then return Tool.ticked(fallback or "path") end
+  local absolute = Tool.absolute_path(value, context)
+  local relative = Tool.project_relative_file_path(value, absolute, context)
+  if relative == "." then
+    relative = common.basename(absolute)
+  end
+  return Tool.ticked(relative or value)
 end
 
 ---Return a text field from a structured tool result.
@@ -235,8 +336,8 @@ function Tool:activity_markdown(call, status, result, context)
   if type(args) == "table" then
     if args.cmd or args.command then table.insert(lines, "Command: `" .. tostring(args.cmd or args.command) .. "`") end
     if args.workdir or args.cwd then table.insert(lines, "Cwd: `" .. tostring(args.workdir or args.cwd) .. "`") end
-    if args.path then table.insert(lines, "Path: `" .. tostring(args.path) .. "`") end
-    if args.directory then table.insert(lines, "Directory: `" .. tostring(args.directory) .. "`") end
+    if args.path then table.insert(lines, "Path: " .. Tool.file_link_or_ticked(args.path, context)) end
+    if args.directory then table.insert(lines, "Directory: " .. Tool.relative_path_or_ticked(args.directory, context)) end
     if args.url then table.insert(lines, "URL: `" .. tostring(args.url) .. "`") end
   end
   if status then table.insert(lines, "Status: " .. tostring(status)) end

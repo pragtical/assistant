@@ -4,6 +4,7 @@ local json = require "core.json"
 local jsonutil = require "plugins.assistant.jsonutil"
 local Backend = require "plugins.assistant.backend"
 local Conversation = require "plugins.assistant.conversation"
+local Tool = require "plugins.assistant.tool"
 
 ---Persistent JSON-RPC app-server backend.
 ---@class assistant.backend.AppServerBackend : assistant.Backend
@@ -219,8 +220,7 @@ end
 
 ---Return whether pending interaction is available.
 local function has_pending_interaction(state)
-  for _ in pairs(state.pending_requests or {}) do return true end
-  return false
+  return next(state.pending_requests or {}) ~= nil
 end
 
 ---Handle sandbox policy.
@@ -682,7 +682,7 @@ local function fenced(text, language)
 end
 
 ---Handle file change activity.
-local function file_change_activity(item)
+local function file_change_activity(item, conversation)
   if type(item) ~= "table" or (item.type ~= "fileChange" and item.type ~= "patch") then return nil end
   local parts = { "Editing files" }
   local changes = item.changes
@@ -693,7 +693,9 @@ local function file_change_activity(item)
       local path = change.path or change.uri
       table.insert(parts, "")
       if path and path ~= "" then
-        table.insert(parts, "`" .. tostring(path) .. "`")
+        table.insert(parts, Tool.file_link_or_ticked(path, {
+          project_dir = conversation and conversation.project_dir
+        }))
         table.insert(parts, "")
       end
       table.insert(parts, fenced(change.diff, "diff"))
@@ -994,7 +996,7 @@ local function apply_message(agent, conversation, msg, state, callback)
       state.response = item.text
       emit_update(callback, state, state.response, { partial = true }, true)
     elseif type(item) == "table" and (item.type == "fileChange" or item.type == "patch") then
-      add_activity(conversation, file_change_activity(item), "file-change:" .. tostring(item.id or ""))
+      add_activity(conversation, file_change_activity(item, conversation), "file-change:" .. tostring(item.id or ""))
       emit_update(callback, state, state.response, {
         partial = true,
         event = "activity_update"
