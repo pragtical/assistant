@@ -1231,7 +1231,7 @@ function HttpBackend:send(agent, conversation, callback)
       if not call then
         if finish_plan_if_complete() then return end
         agent:set_loading(true)
-        conversation:set_status("running", { autosave = false })
+        conversation:set_status("working", { autosave = false })
         post_once(round + 1)
         return
       end
@@ -1803,6 +1803,7 @@ function HttpBackend:resolve_tool_call(agent, conversation, request, decision, c
     end
     add_tool_activity(agent, conversation, call, ok and "completed" or "failed", result)
     add_tool_result(agent, conversation, call, result, ok and "ok" or "error")
+    conversation:set_status("working", { autosave = false })
     if callback then callback(true) end
     resume_on_main_thread(pending)
   end)

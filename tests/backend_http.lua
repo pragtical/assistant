@@ -823,10 +823,13 @@ test.describe("assistant http backend", function()
     local conversation = Conversation(agent, "project")
     local backend = HttpBackend()
     local response
+    local status_after_tool
 
     backend:send(agent, conversation, function(ok, _, text, meta)
       if ok and meta and meta.event == "tool_call_request" then
-        backend:resolve_tool_call(agent, conversation, meta.request, "allow", function() end)
+        backend:resolve_tool_call(agent, conversation, meta.request, "allow", function()
+          status_after_tool = conversation.status
+        end)
       elseif ok and meta and meta.done then
         response = text
       end
@@ -835,6 +838,7 @@ test.describe("assistant http backend", function()
     http.post = old_post
     restore_background_threads()
     test.equal(executed, "README.md")
+    test.equal(status_after_tool, "working")
     test.equal(response, "done")
     test.equal(second_body.stream, false)
     test.equal(second_body.messages[#second_body.messages].role, "tool")
