@@ -28,6 +28,9 @@ local Codex = require "plugins.assistant.agent.codex"
 local Acp = require "plugins.assistant.agent.acp"
 local Copilot = require "plugins.assistant.agent.copilot"
 
+local ok_linewrapping, LineWrapping = pcall(require, "plugins.linewrapping")
+if not ok_linewrapping then LineWrapping = nil end
+
 ---Main assistant conversation UI.
 ---
 ---`PromptView` embeds a rendered transcript, raw transcript view, prompt
@@ -104,6 +107,24 @@ local function disable_child_scroll_past_end(view)
       size = size - math.max(0, extra)
     end
     return size
+  end
+end
+
+---Update raw transcript line wrapping when the plugin is available.
+---@param view assistant.PromptView
+local function update_raw_transcript_wrapping(view)
+  if not LineWrapping or not view.raw_transcript then return end
+  local conf = config.plugins.assistant or {}
+  if not conf.raw_markdown_line_wrapping then
+    view.raw_transcript.wrapping_enabled = false
+    LineWrapping.reconstruct_breaks(view.raw_transcript, view.raw_transcript:get_font(), math.huge)
+    return
+  end
+  view.raw_transcript.wrapping_enabled = true
+  view.raw_transcript.scroll.to.x = 0
+  view.raw_transcript.scroll.x = 0
+  if view.raw_transcript.size.x > 0 then
+    LineWrapping.update_docview_breaks(view.raw_transcript)
   end
 end
 
@@ -310,6 +331,10 @@ function PromptView:new(options)
   set_doc_text(self.raw_transcript_doc, self.transcript_markdown_text)
   self.raw_transcript = DocView(self.raw_transcript_doc)
   disable_child_scroll_past_end(self.raw_transcript)
+  if LineWrapping then
+    local conf = config.plugins.assistant or {}
+    self.raw_transcript.wrapping_enabled = conf.raw_markdown_line_wrapping ~= false
+  end
 
   self.prompt_doc = Doc("Assistant Prompt.md", nil, true)
   self.prompt = DocView(self.prompt_doc)
@@ -549,9 +574,11 @@ function PromptView:sync_raw_transcript()
       markdown:sub(#previous + 1)
     )
     self.raw_transcript_doc:clean()
+    update_raw_transcript_wrapping(self)
     return
   end
   set_doc_text(self.raw_transcript_doc, markdown)
+  update_raw_transcript_wrapping(self)
 end
 
 ---Handle view raw markdown.
@@ -560,6 +587,7 @@ function PromptView:view_raw_markdown()
   self:sync_raw_transcript()
   self.transcript_mode = "raw"
   self.focused_child = self.raw_transcript
+  update_raw_transcript_wrapping(self)
   if follow_bottom then
     scroll_view_to_bottom(self.raw_transcript)
   end
@@ -1693,6 +1721,9 @@ function PromptView:update()
   self.raw_transcript.position.y = self.transcript.position.y
   self.raw_transcript.size.x = self.transcript.size.x
   self.raw_transcript.size.y = self.transcript.size.y
+  if self.transcript_mode == "raw" then
+    update_raw_transcript_wrapping(self)
+  end
 
   local clear_x = right - widget_width(self.clear_button)
   local clear_y = activity_y + math.max(0, (activity_height - widget_height(self.clear_button)) / 2)

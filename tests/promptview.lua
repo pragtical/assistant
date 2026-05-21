@@ -270,6 +270,68 @@ test.describe("assistant prompt view", function()
     test.equal(view:get_transcript_view(), view.transcript)
   end)
 
+  test.it("line-wraps raw markdown view without changing raw text", function()
+    local old_enable_by_default = config.plugins.linewrapping.enable_by_default
+    local old_raw_markdown_line_wrapping = config.plugins.assistant.raw_markdown_line_wrapping
+    config.plugins.linewrapping.enable_by_default = false
+    config.plugins.assistant.raw_markdown_line_wrapping = true
+
+    local agent = Ollama()
+    local conversation = Conversation(agent, "/tmp")
+    local long_line = ("long raw markdown line "):rep(19) .. "long raw markdown line"
+    conversation:add("assistant", long_line, { autosave = false })
+    local view = PromptView({
+      agent = agent,
+      conversation = conversation,
+      backend = {}
+    })
+    local canonical = view:get_conversation_markdown()
+    view:set_position(0, 0)
+    view:set_size(320, 240)
+    view:update()
+
+    view:view_raw_markdown()
+    view:update()
+
+    local raw = view.raw_transcript_doc:get_text(1, 1, math.huge, math.huge):gsub("%s+$", "")
+    test.equal(raw, canonical)
+    test.equal(view.raw_transcript.wrapping_enabled, true)
+    test.not_nil(view.raw_transcript.wrapped_settings)
+    test.equal(view.raw_transcript:get_h_scrollable_size(), 0)
+    test.equal(view.prompt.wrapping_enabled, false)
+
+    config.plugins.linewrapping.enable_by_default = old_enable_by_default
+    config.plugins.assistant.raw_markdown_line_wrapping = old_raw_markdown_line_wrapping
+  end)
+
+  test.it("does not line-wrap raw markdown when disabled", function()
+    local old_enable_by_default = config.plugins.linewrapping.enable_by_default
+    local old_raw_markdown_line_wrapping = config.plugins.assistant.raw_markdown_line_wrapping
+    config.plugins.linewrapping.enable_by_default = false
+    config.plugins.assistant.raw_markdown_line_wrapping = false
+
+    local agent = Ollama()
+    local conversation = Conversation(agent, "/tmp")
+    conversation:add("assistant", ("long raw markdown line "):rep(20), { autosave = false })
+    local view = PromptView({
+      agent = agent,
+      conversation = conversation,
+      backend = {}
+    })
+    view:set_position(0, 0)
+    view:set_size(320, 240)
+    view:update()
+
+    view:view_raw_markdown()
+    view:update()
+
+    test.equal(view.raw_transcript.wrapping_enabled, false)
+    test.equal(view.raw_transcript.wrapped_settings, nil)
+
+    config.plugins.linewrapping.enable_by_default = old_enable_by_default
+    config.plugins.assistant.raw_markdown_line_wrapping = old_raw_markdown_line_wrapping
+  end)
+
   test.it("lets raw markdown docview clicks fall through to mouse keymaps", function()
     local agent = Ollama()
     local conversation = Conversation(agent, "/tmp")

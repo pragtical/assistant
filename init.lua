@@ -42,6 +42,7 @@ config.plugins.assistant = common.merge({
   verbose_tool_calling = false,
   verbose_activity = false,
   reasoning_activity_messages = true,
+  raw_markdown_line_wrapping = true,
   compact_tool_results = true,
   compact_tool_history = true,
   generate_conversation_titles = true,
@@ -303,6 +304,13 @@ config.plugins.assistant = common.merge({
       default = true
     },
     {
+      label = "Raw Markdown Line Wrapping",
+      description = "Visually wrap the raw markdown transcript using Pragtical's linewrapping plugin.",
+      path = "raw_markdown_line_wrapping",
+      type = "toggle",
+      default = true
+    },
+    {
       label = "Generate Conversation Titles",
       description = "Generate a concise title from the first user prompt without adding the title request to conversation context.",
       path = "generate_conversation_titles",
@@ -329,9 +337,12 @@ config.plugins.assistant = common.merge({
 }, config.plugins.assistant)
 
 ---Assistant plugin module.
+---@alias assistant.AgentClass fun(options?: table): assistant.Agent
+---@alias assistant.BackendClass fun(name?: string): assistant.Backend
+---
 ---@class assistant
----@field agents table<string, table>
----@field backends table<string, table>
+---@field agents table<string, assistant.AgentClass>
+---@field backends table<string, assistant.BackendClass>
 local assistant = {
   agents = {},
   backends = {}
@@ -339,7 +350,7 @@ local assistant = {
 
 ---Register an assistant agent class.
 ---@param name string
----@param agent table
+---@param agent assistant.AgentClass
 function assistant.register_agent(name, agent)
   assistant.agents[name] = agent
 end
@@ -352,21 +363,58 @@ end
 
 ---Return an agent class by name or the configured default.
 ---@param name string?
----@return table?
+---@return assistant.AgentClass?
 function assistant.get_agent(name)
   return assistant.agents[name or config.plugins.assistant.agent]
 end
 
 ---Register a communication backend class.
 ---@param name string
----@param backend table
+---@param backend assistant.BackendClass
 function assistant.register_backend(name, backend)
   assistant.backends[name] = backend
 end
 
+---Register an assistant tool contributed by another plugin.
+---
+---The spec uses the same fields as `plugins.assistant.tool`, including
+---callback/build functions, schema params, approval hooks, compaction hooks,
+---activity rendering hooks, and history-success detection.
+---@param name string Tool name exposed to models.
+---@param spec assistant.ToolSpec Full assistant tool specification.
+---@return boolean ok True when the tool was registered.
+function assistant.register_tool(name, spec)
+  if type(name) ~= "string" or name == "" then
+    core.error("Assistant: register_tool requires a tool name")
+    return false
+  end
+  if type(spec) ~= "table" then
+    core.error("Assistant: register_tool requires a tool spec for %s", name)
+    return false
+  end
+  spec.name = name
+  local ok, err = tools.register_external_tool(name, spec)
+  if not ok then
+    core.error("Assistant: could not register tool %s: %s", name, tostring(err))
+    return false
+  end
+  return true
+end
+
+---Remove an assistant tool contributed by another plugin.
+---@param name string Tool name previously passed to `assistant.register_tool`.
+---@return boolean removed True when a registered external tool was removed.
+function assistant.unregister_tool(name)
+  if type(name) ~= "string" or name == "" then
+    core.error("Assistant: unregister_tool requires a tool name")
+    return false
+  end
+  return tools.unregister_external_tool(name)
+end
+
 ---Return a backend class by name or the configured default.
 ---@param name string?
----@return table?
+---@return assistant.BackendClass?
 function assistant.get_backend(name)
   return assistant.backends[name or config.plugins.assistant.backend]
 end

@@ -30,12 +30,16 @@ test.describe("assistant plugin init", function()
   local old_active_view
   local old_open_file
   local old_find_file
+  local old_core_error
 
   test.before_each(function()
     old_projects = core.projects
     old_active_view = core.active_view
     old_open_file = command.map["core:open-file"]
     old_find_file = command.map["core:find-file"]
+    old_core_error = core.error
+    assistant.unregister_tool("external_test_tool")
+    assistant.unregister_tool("external_invalid_tool")
     common.rm(root, true)
     mkdirp(root .. PATHSEP .. "src")
     core.projects = {
@@ -55,8 +59,11 @@ test.describe("assistant plugin init", function()
   test.after_each(function()
     core.projects = old_projects
     core.set_active_view(old_active_view)
+    core.error = old_core_error
     command.map["core:open-file"] = old_open_file
     command.map["core:find-file"] = old_find_file
+    assistant.unregister_tool("external_test_tool")
+    assistant.unregister_tool("external_invalid_tool")
     common.rm(root, true)
   end)
 
@@ -80,6 +87,82 @@ test.describe("assistant plugin init", function()
     test.not_nil(view)
     test.equal(view.focused_child, view.prompt)
     test.equal(core.active_view, view.prompt)
+  end)
+
+  test.it("registers external tools for new assistant agents", function()
+    local ok = assistant.register_tool("external_test_tool", {
+      description = "External test tool.",
+      read_only = true,
+      params = {
+        { name = "value", type = "string", description = "Value.", required = true }
+      },
+      callback = function(args)
+        return true, "value: " .. tostring(args.value)
+      end,
+      compact_result = function()
+        return "compact result"
+      end,
+      activity_markdown = function()
+        return "**External**: ok"
+      end,
+      compact_activity_markdown = function()
+        return "**External compact**: ok"
+      end,
+      result_is_successful = function()
+        return true
+      end
+    })
+
+    test.equal(ok, true)
+    local view = assistant.start_conversation("ollama")
+    local tool = view.agent.tools.external_test_tool
+    test.not_nil(tool)
+    test.equal(tool.description, "External test tool.")
+    test.equal(tool.read_only, true)
+    test.equal(tool.callback({ value = "abc" }), true)
+    local _, result = tool.callback({ value = "abc" })
+    test.equal(result, "value: abc")
+    test.equal(tool.compact_result({}, "raw", {}), "compact result")
+    test.equal(tool.activity_markdown({}, "completed", nil, {}), "**External**: ok")
+    test.equal(tool.compact_activity_markdown({}, "completed", nil, {}), "**External compact**: ok")
+    test.equal(tool.result_is_successful({}, nil, {}), true)
+
+    view.conversation.collaboration_mode = "plan"
+    test.equal(has_value(view.agent:tool_names_for_mode(view.conversation), "external_test_tool"), true)
+    view.conversation.collaboration_mode = "implementation"
+    test.equal(has_value(view.agent:tool_names_for_mode(view.conversation), "external_test_tool"), true)
+  end)
+
+  test.it("unregisters external tools for new assistant agents", function()
+    test.equal(assistant.register_tool("external_test_tool", {
+      description = "External test tool.",
+      read_only = true,
+      callback = function()
+        return true, "ok"
+      end
+    }), true)
+    test.equal(assistant.unregister_tool("external_test_tool"), true)
+
+    local view = assistant.start_conversation("ollama")
+    test.equal(view.agent.tools.external_test_tool, nil)
+  end)
+
+  test.it("reports invalid external tool registrations without throwing", function()
+    local errors = {}
+    core.error = function(format, ...)
+      table.insert(errors, string.format(format, ...))
+    end
+
+    test.equal(assistant.register_tool(nil, {}), false)
+    test.equal(assistant.register_tool("external_invalid_tool"), false)
+    test.equal(assistant.register_tool("external_invalid_tool", { description = "missing callback" }), false)
+    test.equal(#errors, 3)
+    test.equal(errors[1]:find("requires a tool name", 1, true) ~= nil, true)
+    test.equal(errors[2]:find("requires a tool spec", 1, true) ~= nil, true)
+    test.equal(errors[3]:find("could not register tool external_invalid_tool", 1, true) ~= nil, true)
+
+    local view = assistant.start_conversation("ollama")
+    test.equal(view.agent.tools.external_invalid_tool, nil)
   end)
 
   test.it("inserts selected project file path into prompt", function()

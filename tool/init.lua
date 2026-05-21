@@ -1,24 +1,30 @@
----Declarative assistant tool specification.
+---Public declarative assistant tool specification.
+---
+---External plugins may pass this table to `assistant.register_tool()`.
+---@class assistant.ToolSpec
+---@field name string|nil Tool name. Public registration overwrites this with the explicit registry name.
+---@field callback fun(args: table, context: table?): boolean, any|nil Tool implementation callback.
+---@field build fun(self: assistant.Tool, agent: assistant.Agent, facade: table): assistant.Tool.registration|nil|nil Per-agent registration builder.
+---@field description string|nil Provider-facing tool description.
+---@field params table[]|nil Provider-facing parameter definitions.
+---@field read_only boolean|nil Whether the tool is read-only for permission handling.
+---@field requires_approval fun(args: table, context: table?): boolean|nil|nil Custom approval predicate.
+---@field compact_result fun(call: table|nil, result: any, context: table|nil): string|nil|nil Compact a tool result before provider reuse.
+---@field compact_provider_call fun(call: table, context: table|nil): table|nil|nil Compact a historical provider tool call.
+---@field compact_history fun(call: table|nil, result_message: table|nil, context: table|nil): table|string|nil|nil Compact historical call/result pairs.
+---@field activity_label fun(call: table|nil, status: string|nil, result: any, context: table|nil): string|nil|nil Short activity label.
+---@field activity_markdown fun(call: table|nil, status: string|nil, result: any, context: table|nil): string|nil|nil Verbose activity Markdown.
+---@field compact_activity_markdown fun(call: table|nil, status: string|nil, result: any, context: table|nil): string|nil|nil Compact activity Markdown.
+---@field result_is_successful fun(call: table|nil, result_message: table|nil, context: table|nil): boolean|nil|nil Whether a historical result represents a successful operation.
+---@field additional_properties boolean|nil JSON-schema additionalProperties value.
+
+---Instantiated assistant tool.
 ---
 ---Tool modules create `Tool` instances and the registry asks each instance for
 ---the concrete registration table to expose on an agent.
----@class assistant.Tool
+---@class assistant.Tool : assistant.ToolSpec
 ---@field name string
----@field callback function|nil
----@field build fun(self: assistant.Tool, agent: assistant.Agent, facade: table): assistant.Tool.registration|nil
----@field description string|nil
----@field params table[]|nil
----@field read_only boolean|nil
----@field requires_approval function|nil
----@field compact_result function|nil
----@field compact_provider_call function|nil
----@field compact_history function|nil
----@field activity_label function|nil
----@field activity_markdown function|nil
----@field compact_activity_markdown function|nil
----@field result_is_successful function|nil
----@field additional_properties boolean|nil
----@field new fun(self: assistant.Tool, spec: table): assistant.Tool
+---@field new fun(self: assistant.Tool, spec: assistant.ToolSpec): assistant.Tool
 ---
 ---@class assistant.Tool.registration
 ---@field callback function
@@ -365,7 +371,7 @@ function Tool:result_is_successful()
 end
 
 ---Create a new instance.
----@param spec table
+---@param spec assistant.ToolSpec
 ---@return assistant.Tool
 function Tool:new(spec)
   spec = spec or {}
