@@ -623,7 +623,7 @@ function filetools.write_file(path, content)
   if context.contains_omitted_tool_argument({ path = path, content = content }) then
     return false, "refusing to write file from compacted historical placeholder content"
   end
-  local absolute, err = context.assert_project_path(path)
+  local absolute, err = context.assert_write_path(path, content or "")
   if not absolute then return false, err end
   local existed = system.get_file_info(absolute) ~= nil
   context.yield_ui()
@@ -662,7 +662,7 @@ function filetools.edit(path, edits, oldText, newText)
   if #edits == 0 then
     return false, "edit tool input is invalid. edits must contain at least one replacement."
   end
-  local absolute, err = context.assert_project_path(path)
+  local absolute, err = context.assert_write_path(path, "Edit file")
   if not absolute then return false, err end
   context.yield_ui()
   local raw, read_err = context.read_file(absolute)

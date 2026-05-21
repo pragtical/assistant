@@ -99,6 +99,21 @@ function context.assert_project_path(path)
   return absolute
 end
 
+---Assert a writable path, asking before allowing paths outside loaded roots.
+---@param path string
+---@param details string|nil
+---@return string|nil absolute
+---@return string|nil err
+function context.assert_write_path(path, details)
+  local absolute = context.normalize(path)
+  if not absolute then return nil, "missing path" end
+  if context.project_root_for(absolute) then return absolute end
+  if context.confirm("write_path", absolute, details or "Write outside loaded project roots") then
+    return absolute
+  end
+  return nil, "user denied writing outside loaded project roots: " .. absolute
+end
+
 ---Handle assert read path.
 ---@param path string
 ---@return string|nil absolute
