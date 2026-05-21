@@ -1,4 +1,4 @@
--- mod-version: 3.10
+-- mod-version: 3.10.1
 local core = require "core"
 local common = require "core.common"
 local command = require "core.command"
