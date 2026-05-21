@@ -91,6 +91,22 @@ local function contains(view, x, y)
     and y <= view.position.y + view.size.y
 end
 
+local docview_get_scrollable_size = DocView.get_scrollable_size
+
+---Prevent an embedded DocView from inheriting global scroll-past-end behavior.
+---@param view core.docview
+local function disable_child_scroll_past_end(view)
+  function view:get_scrollable_size()
+    local size = docview_get_scrollable_size(self)
+    if config.scroll_past_end then
+      local _, _, _, h_scroll = self.h_scrollbar:get_track_rect()
+      local extra = self.size.y - self:get_line_height() - style.padding.y * 2 - h_scroll
+      size = size - math.max(0, extra)
+    end
+    return size
+  end
+end
+
 ---Handle view is at bottom.
 local function view_is_at_bottom(view)
   local max_scroll = math.max(0, view:get_scrollable_size() - view.size.y)
@@ -293,9 +309,11 @@ function PromptView:new(options)
   self.raw_transcript_doc = Doc("Assistant Conversation.md", nil, true)
   set_doc_text(self.raw_transcript_doc, self.transcript_markdown_text)
   self.raw_transcript = DocView(self.raw_transcript_doc)
+  disable_child_scroll_past_end(self.raw_transcript)
 
   self.prompt_doc = Doc("Assistant Prompt.md", nil, true)
   self.prompt = DocView(self.prompt_doc)
+  disable_child_scroll_past_end(self.prompt)
   self.prompt.assistant_prompt_view = self
   self.transcript.assistant_prompt_view = self
   self.raw_transcript.assistant_prompt_view = self

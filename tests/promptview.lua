@@ -2,6 +2,7 @@ local test = require "core.test"
 dofile("tests/helper.inc")
 local config = require "core.config"
 local keymap = require "core.keymap"
+local style = require "core.style"
 local MessageBox = require "widget.messagebox"
 local PromptView = require "plugins.assistant.promptview"
 local Conversation = require "plugins.assistant.conversation"
@@ -53,6 +54,33 @@ test.describe("assistant prompt view", function()
     test.equal(view.transcript:get_name(), "Renamed Sario")
     test.equal(view.raw_transcript:get_name(), "Renamed Sario")
     test.equal(view.prompt:get_name(), "Renamed Sario")
+  end)
+
+  test.it("embedded docviews ignore scroll past end", function()
+    local previous_scroll_past_end = config.scroll_past_end
+    config.scroll_past_end = true
+
+    local agent = Ollama()
+    local conversation = Conversation(agent, "/tmp")
+    conversation:add("user", "hello", { autosave = false })
+    local view = PromptView({
+      agent = agent,
+      conversation = conversation
+    })
+
+    view.prompt.size.y = 400
+    view.raw_transcript.size.y = 400
+    view.prompt_doc:insert(1, 1, "prompt\nline")
+
+    local function expected_size(docview)
+      local _, _, _, h_scroll = docview.h_scrollbar:get_track_rect()
+      return docview:get_line_height() * #docview.doc.lines + style.padding.y * 2 + h_scroll
+    end
+
+    test.equal(view.prompt:get_scrollable_size(), expected_size(view.prompt))
+    test.equal(view.raw_transcript:get_scrollable_size(), expected_size(view.raw_transcript))
+
+    config.scroll_past_end = previous_scroll_past_end
   end)
 
   test.it("restores copilot conversations with the ACP backend", function()
