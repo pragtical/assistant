@@ -1714,9 +1714,9 @@ function PromptView:update()
   local activity_y = prompt_y - activity_height - style.padding.y
   local transcript_height = math.max(40, activity_y - top - style.padding.y)
 
-  self.transcript.position.x = pos.x + left
+  self.transcript.position.x = pos.x
   self.transcript.position.y = pos.y + top
-  self.transcript.size.x = math.max(10, size.x - padding * 2)
+  self.transcript.size.x = math.max(10, size.x)
   self.transcript.size.y = transcript_height
   self.raw_transcript.position.x = self.transcript.position.x
   self.raw_transcript.position.y = self.transcript.position.y
@@ -1745,9 +1745,9 @@ function PromptView:update()
   self.activity:set_position(left, activity_y + math.max(0, (activity_height - widget_height(self.activity)) / 2))
   self.activity:set_size(math.max(10, file_x - left - padding), widget_height(self.activity))
 
-  self.prompt.position.x = pos.x + left
+  self.prompt.position.x = pos.x
   self.prompt.position.y = pos.y + prompt_y
-  self.prompt.size.x = math.max(10, size.x - padding * 2)
+  self.prompt.size.x = math.max(10, size.x)
   self.prompt.size.y = prompt_height
 
   local activity, active = animated_status_label(self:get_display_status())
