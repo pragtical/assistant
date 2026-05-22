@@ -36,6 +36,7 @@ config.plugins.assistant = common.merge({
   verbose_tool_calling = false,
   verbose_activity = false,
   reasoning_activity_messages = true,
+  persist_reasoning_content = false,
   raw_markdown_line_wrapping = true,
   compact_tool_results = false,
   compact_tool_history = false,
@@ -243,6 +244,13 @@ config.plugins.assistant = common.merge({
       default = true
     },
     {
+      label = "Persist Reasoning Content",
+      description = "Persist and resend provider reasoning_content for all HTTP/OpenAI-compatible chat agents. DeepSeek enables this by default.",
+      path = "persist_reasoning_content",
+      type = "toggle",
+      default = false
+    },
+    {
       label = "Raw Markdown Line Wrapping",
       description = "Visually wrap the raw markdown transcript using Pragtical's linewrapping plugin.",
       path = "raw_markdown_line_wrapping",
@@ -292,12 +300,14 @@ local assistant = {
 ---@param agent assistant.AgentClass
 function assistant.register_agent(name, agent)
   assistant.agents[name] = agent
+  PromptView.register_agent(name, agent)
 end
 
 ---Remove a registered assistant agent class.
 ---@param name string
 function assistant.unregister_agent(name)
   assistant.agents[name] = nil
+  PromptView.unregister_agent(name)
 end
 
 ---Configure provider-specific defaults for an assistant agent.
@@ -355,6 +365,32 @@ end
 ---@param backend assistant.BackendClass
 function assistant.register_backend(name, backend)
   assistant.backends[name] = backend
+  PromptView.register_backend(name, backend)
+end
+
+---Return a backend class by name or the configured default.
+---@param name string?
+---@return assistant.BackendClass?
+function assistant.get_backend(name)
+  return assistant.backends[name or config.plugins.assistant.backend]
+end
+
+---Handle configured agent.
+---@param name string?
+---@return assistant.Agent
+local function configured_agent(name)
+  local cls = assistant.get_agent(name)
+  local agent = cls and cls() or Ollama()
+  agent_config.apply(agent, config.plugins.assistant)
+  return tools.register_agent_tools(agent)
+end
+
+---Handle configured backend.
+---@param name string?
+---@return assistant.Backend
+local function configured_backend(name)
+  local cls = assistant.get_backend(name)
+  return cls and cls() or HttpBackend()
 end
 
 ---Register an assistant tool contributed by another plugin.
@@ -392,31 +428,6 @@ function assistant.unregister_tool(name)
     return false
   end
   return tools.unregister_external_tool(name)
-end
-
----Return a backend class by name or the configured default.
----@param name string?
----@return assistant.BackendClass?
-function assistant.get_backend(name)
-  return assistant.backends[name or config.plugins.assistant.backend]
-end
-
----Handle configured agent.
----@param name string?
----@return assistant.Agent
-local function configured_agent(name)
-  local cls = assistant.get_agent(name)
-  local agent = cls and cls() or Ollama()
-  agent_config.apply(agent, config.plugins.assistant)
-  return tools.register_agent_tools(agent)
-end
-
----Handle configured backend.
----@param name string?
----@return assistant.Backend
-local function configured_backend(name)
-  local cls = assistant.get_backend(name)
-  return cls and cls() or HttpBackend()
 end
 
 ---Open prompt view.

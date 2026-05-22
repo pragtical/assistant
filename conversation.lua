@@ -890,7 +890,15 @@ function Conversation:to_provider_messages()
       and role ~= "error"
       and not (role == "assistant" and content == "")
     then
-      table.insert(messages, { role = role, content = msg.message or "" })
+      local provider_message = { role = role, content = msg.message or "" }
+      if role == "assistant"
+        and msg.meta
+        and type(msg.meta.provider_reasoning_content) == "string"
+        and msg.meta.provider_reasoning_content ~= ""
+      then
+        provider_message.reasoning_content = msg.meta.provider_reasoning_content
+      end
+      table.insert(messages, provider_message)
     end
     if i % 50 == 0 then yield_ui() end
   end

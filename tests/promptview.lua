@@ -11,7 +11,12 @@ local Ollama = require "plugins.assistant.agent.ollama"
 local OpenAI = require "plugins.assistant.agent.openai"
 local Codex = require "plugins.assistant.agent.codex"
 local Copilot = require "plugins.assistant.agent.copilot"
+local Anthropic = require "plugins.assistant.agent.anthropic"
+local DeepSeek = require "plugins.assistant.agent.deepseek"
 local AcpBackend = require "plugins.assistant.backend.acp"
+local AnthropicBackend = require "plugins.assistant.backend.anthropic"
+local HttpBackend = require "plugins.assistant.backend.http"
+local assistant = dofile("init.lua")
 
 test.describe("assistant prompt view", function()
   test.it("creates embedded transcript and prompt views", function()
@@ -104,6 +109,83 @@ test.describe("assistant prompt view", function()
     test.equal(restored.conversation.agent, "copilot")
     test.equal(restored.conversation.backend, "acp")
     test.equal(restored.backend:is(AcpBackend), true)
+  end)
+
+  test.it("restores anthropic conversations with the Anthropic backend", function()
+    local old_agent = config.plugins.assistant.agent
+    config.plugins.assistant.agent = "ollama"
+
+    local agent = Anthropic()
+    local conversation = Conversation(agent, "/tmp")
+    conversation:add("user", "hello", { autosave = false })
+    test.equal(conversation:save(), true)
+
+    local restored = PromptView.from_state({
+      id = conversation.id,
+      project_dir = conversation.project_dir
+    })
+
+    config.plugins.assistant.agent = old_agent
+
+    test.not_nil(restored)
+    test.equal(restored.agent.name, "anthropic")
+    test.equal(restored.conversation.agent, "anthropic")
+    test.equal(restored.conversation.backend, "anthropic")
+    test.equal(restored.backend:is(AnthropicBackend), true)
+  end)
+
+  test.it("restores deepseek conversations with the HTTP backend", function()
+    local old_agent = config.plugins.assistant.agent
+    config.plugins.assistant.agent = "ollama"
+
+    local agent = DeepSeek()
+    local conversation = Conversation(agent, "/tmp")
+    conversation:add("user", "hello", { autosave = false })
+    test.equal(conversation:save(), true)
+
+    local restored = PromptView.from_state({
+      id = conversation.id,
+      project_dir = conversation.project_dir
+    })
+
+    config.plugins.assistant.agent = old_agent
+
+    test.not_nil(restored)
+    test.equal(restored.agent.name, "deepseek")
+    test.equal(restored.conversation.agent, "deepseek")
+    test.equal(restored.conversation.backend, "http")
+    test.equal(restored.backend:is(HttpBackend), true)
+  end)
+
+  test.it("restores externally registered agents through prompt view registration", function()
+    assistant.register_agent("external_promptview_agent", function()
+      return Agent({
+        name = "external_promptview_agent",
+        display_name = "External PromptView Agent",
+        backend = "http"
+      })
+    end)
+
+    local agent = Agent({
+      name = "external_promptview_agent",
+      display_name = "External PromptView Agent",
+      backend = "http"
+    })
+    local conversation = Conversation(agent, "/tmp")
+    conversation:add("user", "hello", { autosave = false })
+    test.equal(conversation:save(), true)
+
+    local restored = PromptView.from_state({
+      id = conversation.id,
+      project_dir = conversation.project_dir
+    })
+
+    assistant.unregister_agent("external_promptview_agent")
+
+    test.not_nil(restored)
+    test.equal(restored.agent.name, "external_promptview_agent")
+    test.equal(restored.conversation.agent, "external_promptview_agent")
+    test.equal(restored.backend:is(HttpBackend), true)
   end)
 
   test.it("activates the embedded prompt docview on click", function()
@@ -681,6 +763,33 @@ test.describe("assistant prompt view", function()
     test.equal(view.pending_assistant, nil)
     test.equal(view.transcript_markdown_text:find("## Assistant", 1, true) ~= nil, true)
     test.equal(view.transcript_markdown_text:find("hello **world**", 1, true) ~= nil, true)
+  end)
+
+  test.it("stores provider reasoning_content metadata on final assistant output", function()
+    local agent = Ollama()
+    local callback
+    local conversation = Conversation(agent, "/tmp")
+    local view = PromptView({
+      agent = agent,
+      conversation = conversation,
+      backend = {
+        send = function(_, _, _, cb)
+          callback = cb
+        end
+      }
+    })
+
+    view.prompt_doc:insert(1, 1, "hello")
+    view:submit()
+
+    callback(true, nil, "answer", {
+      done = true,
+      provider_reasoning_content = "private chain"
+    })
+
+    local last = conversation.messages[#conversation.messages]
+    test.equal(last.role, "assistant")
+    test.equal(last.meta.provider_reasoning_content, "private chain")
   end)
 
   test.it("redraws rendered markdown when an existing activity changes", function()

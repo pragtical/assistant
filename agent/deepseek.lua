@@ -32,7 +32,8 @@ function DeepSeek:new(options)
     collaboration_modes = true,
     stream_responses = true,
     tool_calling = true,
-    local_compact = true
+    local_compact = true,
+    keep_reasoning_content = true
   }, options.capabilities)
   self.super.new(self, options)
 end

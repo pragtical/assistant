@@ -9,6 +9,7 @@ local Conversation = require "plugins.assistant.conversation"
 local HttpBackend = require "plugins.assistant.backend.http"
 local Ollama = require "plugins.assistant.agent.ollama"
 local OpenAI = require "plugins.assistant.agent.openai"
+local DeepSeek = require "plugins.assistant.agent.deepseek"
 local tools = require "plugins.assistant.tools"
 
 test.describe("assistant http backend", function()
@@ -18,6 +19,7 @@ test.describe("assistant http backend", function()
   local old_fetch_model_metadata
   local old_verbose_tool_calling
   local old_reasoning_activity_messages
+  local old_persist_reasoning_content
 
   test.before_each(function()
     old_allow_any_read_path = config.plugins.assistant.allow_any_read_path
@@ -26,12 +28,14 @@ test.describe("assistant http backend", function()
     old_fetch_model_metadata = config.plugins.assistant.fetch_model_metadata
     old_verbose_tool_calling = config.plugins.assistant.verbose_tool_calling
     old_reasoning_activity_messages = config.plugins.assistant.reasoning_activity_messages
+    old_persist_reasoning_content = config.plugins.assistant.persist_reasoning_content
     config.plugins.assistant.allow_any_read_path = false
     config.plugins.assistant.log_raw_messages = true
     config.plugins.assistant.request_timeout_ms = 300000
     config.plugins.assistant.fetch_model_metadata = false
     config.plugins.assistant.verbose_tool_calling = false
     config.plugins.assistant.reasoning_activity_messages = true
+    config.plugins.assistant.persist_reasoning_content = false
   end)
 
   test.after_each(function()
@@ -41,6 +45,7 @@ test.describe("assistant http backend", function()
     config.plugins.assistant.fetch_model_metadata = old_fetch_model_metadata
     config.plugins.assistant.verbose_tool_calling = old_verbose_tool_calling
     config.plugins.assistant.reasoning_activity_messages = old_reasoning_activity_messages
+    config.plugins.assistant.persist_reasoning_content = old_persist_reasoning_content
   end)
 
   local function run_background_threads_immediately()
@@ -530,6 +535,117 @@ test.describe("assistant http backend", function()
     end
     test.equal(response, "answer")
     test.equal(found_reasoning, true)
+  end)
+
+  test.it("replays stored reasoning_content for DeepSeek provider messages", function()
+    local agent = DeepSeek()
+    local conversation = Conversation(agent, "project")
+    conversation:add("assistant", "answer", {
+      autosave = false,
+      meta = {
+        provider_reasoning_content = "private chain"
+      }
+    })
+
+    local payload = agent:build_payload(conversation)
+    local assistant_message
+    for _, message in ipairs(payload.messages or {}) do
+      if message.role == "assistant" and message.content == "answer" then
+        assistant_message = message
+      end
+    end
+
+    test.not_nil(assistant_message)
+    test.equal(assistant_message.reasoning_content, "private chain")
+  end)
+
+  test.it("does not replay stored reasoning_content for agents without opt-in", function()
+    local agent = Ollama()
+    local conversation = Conversation(agent, "project")
+    conversation:add("assistant", "answer", {
+      autosave = false,
+      meta = {
+        provider_reasoning_content = "private chain"
+      }
+    })
+
+    local payload = agent:build_payload(conversation)
+    local assistant_message
+    for _, message in ipairs(payload.messages or {}) do
+      if message.role == "assistant" and message.content == "answer" then
+        assistant_message = message
+      end
+    end
+
+    test.not_nil(assistant_message)
+    test.equal(assistant_message.reasoning_content, nil)
+  end)
+
+  test.it("persist_reasoning_content forces replay for agents without opt-in", function()
+    config.plugins.assistant.persist_reasoning_content = true
+    local agent = Ollama()
+    local conversation = Conversation(agent, "project")
+    conversation:add("assistant", "answer", {
+      autosave = false,
+      meta = {
+        provider_reasoning_content = "private chain"
+      }
+    })
+
+    local payload = agent:build_payload(conversation)
+    local assistant_message
+    for _, message in ipairs(payload.messages or {}) do
+      if message.role == "assistant" and message.content == "answer" then
+        assistant_message = message
+      end
+    end
+
+    test.not_nil(assistant_message)
+    test.equal(assistant_message.reasoning_content, "private chain")
+  end)
+
+  test.it("returns streamed reasoning_content metadata for opted-in agents", function()
+    local old_request = http.request
+    http.request = function(_, _, options)
+      options.on_header({ status = 200 })
+      options.on_chunk('data: {"choices":[{"delta":{"reasoning_content":"Thinking"},"finish_reason":null}]}\n\n')
+      options.on_chunk('data: {"choices":[{"delta":{"content":"answer"},"finish_reason":null}]}\n\n')
+      options.on_chunk('data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n\n')
+      options.on_done(true, nil, nil, { status = 200 })
+    end
+
+    local agent = DeepSeek({ stream = true })
+    local conversation = Conversation(agent, "project")
+    local backend = HttpBackend()
+    local reasoning_content
+
+    backend:send(agent, conversation, function(ok, _, _, meta)
+      if ok and meta and meta.done then
+        reasoning_content = meta.provider_reasoning_content
+      end
+    end)
+
+    http.request = old_request
+    test.equal(reasoning_content, "Thinking")
+  end)
+
+  test.it("replays reasoning_content on assistant tool-call provider messages", function()
+    local agent = DeepSeek()
+    local calls = {
+      {
+        id = "call_1",
+        name = "read",
+        arguments = { path = "init.lua" },
+        arguments_text = '{"path":"init.lua"}',
+        _assistant_provider_reasoning_content = "private chain"
+      }
+    }
+
+    local provider_message = agent:tool_call_provider_message(calls, 1)
+
+    test.not_nil(provider_message)
+    test.equal(provider_message.role, "assistant")
+    test.equal(provider_message.reasoning_content, "private chain")
   end)
 
   test.it("hides streamed chat reasoning activity when disabled", function()

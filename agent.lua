@@ -75,7 +75,8 @@ function Agent:new(options)
     stream_responses = false,
     tool_calling = false,
     keep_alive = false,
-    local_compact = false
+    local_compact = false,
+    keep_reasoning_content = false
   }, options.capabilities or {})
   self.collaboration_modes = options.collaboration_modes
   self.compact_implementation_tools = options.compact_implementation_tools == true
@@ -610,6 +611,13 @@ function Agent:provider_messages_for_conversation(conversation)
   local messages = history_normalizer.normalize_chat_messages(
     self:compact_provider_messages(conversation:to_provider_messages(), conversation)
   )
+  if not self:should_persist_reasoning_content() then
+    for _, message in ipairs(messages) do
+      if type(message) == "table" then
+        message.reasoning_content = nil
+      end
+    end
+  end
   local instructions = self:get_mode_instructions(conversation)
   if not instructions or instructions == "" then return messages end
   local result = {}
@@ -998,6 +1006,14 @@ function Agent:configured_reasoning_effort()
   value = value:match("^%s*(.-)%s*$")
   if value == "" or not REASONING_EFFORT_VALUES[value] then return nil end
   return value
+end
+
+---Return whether provider reasoning_content should be persisted and replayed.
+---@return boolean
+function Agent:should_persist_reasoning_content()
+  local conf = config.plugins and config.plugins.assistant or {}
+  return conf.persist_reasoning_content == true
+    or self:has_capability("keep_reasoning_content")
 end
 
 ---Return the provider request field used for output token limits.
@@ -1441,11 +1457,18 @@ function Agent:tool_call_provider_message(calls, index)
   for _, call in ipairs(calls or {}) do
     table.insert(tool_calls, chat_provider_tool_call(call))
   end
-  return {
+  local message = {
     role = "assistant",
     content = "",
     tool_calls = tool_calls
   }
+  local reasoning = calls
+    and calls[1]
+    and calls[1]._assistant_provider_reasoning_content
+  if type(reasoning) == "string" and reasoning ~= "" then
+    message.reasoning_content = reasoning
+  end
+  return message
 end
 
 ---Handle tool result provider message.
@@ -1591,6 +1614,27 @@ function Agent:parse_response(result)
   if result.response then return result.response end
   if result.content then return result.content end
   return ""
+end
+
+---Parse provider reasoning_content from a complete response.
+---@param result table|string|nil
+---@return string|nil reasoning_content
+function Agent:parse_reasoning_content(result)
+  if type(result) ~= "table" then return nil end
+  local choice = result.choices and result.choices[1]
+  local message = choice and choice.message
+  if type(message) == "table" then
+    local reasoning = message.reasoning_content
+      or message.reasoning
+      or message.reasoning_text
+    if type(reasoning) == "string" and reasoning ~= "" then return reasoning end
+  end
+  local msg = result.message
+  if type(msg) == "table" then
+    local reasoning = msg.reasoning_content or msg.reasoning or msg.reasoning_text
+    if type(reasoning) == "string" and reasoning ~= "" then return reasoning end
+  end
+  return nil
 end
 
 ---Parse usage.

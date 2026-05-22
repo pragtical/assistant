@@ -17,17 +17,8 @@ local Conversation = require "plugins.assistant.conversation"
 local tools = require "plugins.assistant.tools"
 local agent_config = require "plugins.assistant.agent_config"
 local HttpBackend = require "plugins.assistant.backend.http"
-local AppServerBackend = require "plugins.assistant.backend.appserver"
-local CliBackend = require "plugins.assistant.backend.cli"
-local AcpBackend = require "plugins.assistant.backend.acp"
 local ModelDialog = require "plugins.assistant.ui.modeldialog"
 local Ollama = require "plugins.assistant.agent.ollama"
-local LlamaCpp = require "plugins.assistant.agent.llamacpp"
-local Lms = require "plugins.assistant.agent.lms"
-local OpenAI = require "plugins.assistant.agent.openai"
-local Codex = require "plugins.assistant.agent.codex"
-local Acp = require "plugins.assistant.agent.acp"
-local Copilot = require "plugins.assistant.agent.copilot"
 
 local ok_linewrapping, LineWrapping = pcall(require, "plugins.linewrapping")
 if not ok_linewrapping then LineWrapping = nil end
@@ -51,20 +42,38 @@ if not ok_linewrapping then LineWrapping = nil end
 local PromptView = Widget:extend()
 
 local STREAMING_TRANSCRIPT_REFRESH_INTERVAL = 0.05
+local registered_agent_classes = {}
+local registered_backend_classes = {}
 
 PromptView.context = "session"
 PromptView.transcript_menu = ContextMenu()
 PromptView.raw_transcript_menu = ContextMenu()
 
-local DEFAULT_AGENT_CLASSES = {
-  ollama = Ollama,
-  llamacpp = LlamaCpp,
-  lms = Lms,
-  openai = OpenAI,
-  codex = Codex,
-  acp = Acp,
-  copilot = Copilot
-}
+---Register an agent class available to restored prompt views.
+---@param name string
+---@param agent assistant.AgentClass
+function PromptView.register_agent(name, agent)
+  registered_agent_classes[name] = agent
+end
+
+---Remove a registered prompt-view agent class.
+---@param name string
+function PromptView.unregister_agent(name)
+  registered_agent_classes[name] = nil
+end
+
+---Register a backend class available to restored prompt views.
+---@param name string
+---@param backend assistant.BackendClass
+function PromptView.register_backend(name, backend)
+  registered_backend_classes[name] = backend
+end
+
+---Remove a registered prompt-view backend class.
+---@param name string
+function PromptView.unregister_backend(name)
+  registered_backend_classes[name] = nil
+end
 
 ---Return the text.
 local function get_text(doc)
@@ -251,18 +260,19 @@ end
 
 ---Handle make agent.
 local function make_agent(name)
-  local cls = DEFAULT_AGENT_CLASSES[name or "ollama"] or Ollama
+  local cls = registered_agent_classes[name or "ollama"]
+    or registered_agent_classes.ollama
+    or Ollama
   local agent = cls()
-  local conf = config.plugins.assistant or {}
-  return tools.register_agent_tools(agent_config.apply(agent, conf))
+  return tools.register_agent_tools(agent_config.apply(agent, config.plugins.assistant or {}))
 end
 
 ---Handle make backend.
 local function make_backend(name)
-  if name == "appserver" then return AppServerBackend() end
-  if name == "cli" then return CliBackend() end
-  if name == "acp" then return AcpBackend() end
-  return HttpBackend()
+  local cls = registered_backend_classes[name or "http"]
+    or registered_backend_classes.http
+    or HttpBackend
+  return cls()
 end
 
 ---Return the model label with reasoning effort when it should be visible.
@@ -1112,6 +1122,13 @@ function PromptView:dispatch_prompt_turn(text)
       end
       if meta and meta.usage then
         self.conversation:set_usage(meta.usage)
+      end
+      if meta
+        and type(meta.provider_reasoning_content) == "string"
+        and meta.provider_reasoning_content ~= ""
+      then
+        self.pending_assistant.meta = self.pending_assistant.meta or {}
+        self.pending_assistant.meta.provider_reasoning_content = meta.provider_reasoning_content
       end
       self.conversation:touch()
       if meta and meta.done then

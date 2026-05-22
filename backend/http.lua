@@ -571,6 +571,21 @@ local function reasoning_activity_messages_enabled()
   return conf.reasoning_activity_messages ~= false
 end
 
+---Return whether reasoning_content should be stored for this agent.
+local function should_persist_reasoning_content(agent)
+  return agent
+    and agent.should_persist_reasoning_content
+    and agent:should_persist_reasoning_content()
+end
+
+---Attach provider reasoning_content to the first tool call in an assistant call group.
+local function attach_reasoning_content_to_calls(agent, calls, reasoning)
+  if not should_persist_reasoning_content(agent) then return end
+  if type(reasoning) ~= "string" or reasoning == "" then return end
+  if type(calls) ~= "table" or type(calls[1]) ~= "table" then return end
+  calls[1]._assistant_provider_reasoning_content = reasoning
+end
+
 ---Handle fenced.
 local function fenced(text, language)
   return "```" .. (language or "text") .. "\n" .. tostring(text or "") .. "\n```"
@@ -1364,7 +1379,7 @@ function HttpBackend:send(agent, conversation, callback)
   end
 
   ---Handle finish.
-  local function finish(text, info, final_usage)
+  local function finish(text, info, final_usage, finish_meta)
     self.pending_tool_call = nil
     self.pending_user_input_tool = nil
     self:finish_request()
@@ -1373,7 +1388,12 @@ function HttpBackend:send(agent, conversation, callback)
     if is_plan_mode(agent, conversation) then
       text = sanitize_plan_response(text)
     end
-    callback(true, nil, text or "", { done = true, info = info, usage = final_usage })
+    local meta = common.merge({
+      done = true,
+      info = info,
+      usage = final_usage
+    }, finish_meta or {})
+    callback(true, nil, text or "", meta)
     compact_after_done()
   end
 
@@ -1868,21 +1888,40 @@ function HttpBackend:send(agent, conversation, callback)
             callback(false, request_error("Chat request", agent, info, stream_error, err), nil, { info = info })
           elseif has_streamed_tool_calls and final_is_completed_plan then
             conversation:set_status("idle", { autosave = false })
-            callback(true, nil, sanitize_plan_response(final_text), { done = true, info = info, usage = usage })
+            callback(true, nil, sanitize_plan_response(final_text), {
+              done = true,
+              info = info,
+              usage = usage,
+              provider_reasoning_content = should_persist_reasoning_content(agent)
+                and reasoning_text ~= ""
+                and reasoning_text
+                or nil
+            })
             compact_after_done()
           elseif has_streamed_tool_calls and not plan_completed then
             compact_after_done()
             chunks = {}
-            request_tool_approval(finalize_stream_tool_calls(streamed_tool_calls), round or 0, true)
+            local calls = finalize_stream_tool_calls(streamed_tool_calls)
+            attach_reasoning_content_to_calls(agent, calls, reasoning_text)
+            request_tool_approval(calls, round or 0, true)
           elseif text_tool_calls and #text_tool_calls > 0 then
             compact_after_done()
             chunks = {}
             partial_text = ""
+            attach_reasoning_content_to_calls(agent, text_tool_calls, reasoning_text)
             request_tool_approval(text_tool_calls, round or 0, true)
           elseif plan_stream_state and plan_completed and final_text and final_text ~= "" then
             conversation:set_status("idle", { autosave = false })
             final_text = sanitize_plan_response(final_text)
-            callback(true, nil, final_text, { done = true, info = info, usage = usage })
+            callback(true, nil, final_text, {
+              done = true,
+              info = info,
+              usage = usage,
+              provider_reasoning_content = should_persist_reasoning_content(agent)
+                and reasoning_text ~= ""
+                and reasoning_text
+                or nil
+            })
             compact_after_done()
           else
             emit_partial(true)
@@ -1890,7 +1929,15 @@ function HttpBackend:send(agent, conversation, callback)
             if is_plan_mode(agent, conversation) then
               final_text = sanitize_plan_response(final_text)
             end
-            callback(true, nil, final_text, { done = true, info = info, usage = usage })
+            callback(true, nil, final_text, {
+              done = true,
+              info = info,
+              usage = usage,
+              provider_reasoning_content = should_persist_reasoning_content(agent)
+                and reasoning_text ~= ""
+                and reasoning_text
+                or nil
+            })
             compact_after_done()
           end
         else
@@ -1941,17 +1988,26 @@ function HttpBackend:send(agent, conversation, callback)
           conversation:append_raw_response("http-response", result)
           local tool_calls = tools_available and parse_tools and agent:parse_tool_calls(result) or {}
           local response_text = agent:parse_response(result)
+          local reasoning_content = should_persist_reasoning_content(agent)
+            and agent.parse_reasoning_content
+            and agent:parse_reasoning_content(result)
+            or nil
           local parsed_usage = agent:parse_usage(result)
           if parsed_usage and conversation.set_usage then
             conversation:set_usage(parsed_usage)
           end
           if tool_calls and #tool_calls > 0 and is_plan_mode(agent, conversation) and contains_completed_plan(response_text) then
-            finish(response_text, info, parsed_usage)
+            finish(response_text, info, parsed_usage, {
+              provider_reasoning_content = reasoning_content
+            })
           elseif tool_calls and #tool_calls > 0 then
             compact_after_done()
+            attach_reasoning_content_to_calls(agent, tool_calls, reasoning_content)
             request_tool_approval(tool_calls, round, false)
           else
-            finish(response_text, info, parsed_usage)
+            finish(response_text, info, parsed_usage, {
+              provider_reasoning_content = reasoning_content
+            })
           end
         else
           fail(request_error("Chat request", agent, info, result, err), info, result or err)
