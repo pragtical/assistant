@@ -948,6 +948,309 @@ test.describe("assistant agent", function()
     test.equal(payload.messages[4].role, "user")
   end)
 
+  test.it("compacts completed historical file inspection tool calls before provider requests", function()
+    local old_compact = config.plugins.assistant.compact_tool_history
+    config.plugins.assistant.compact_tool_history = true
+
+    common.rm(snapshot_root, true)
+    mkdirp(snapshot_root)
+    write(snapshot_root .. PATHSEP .. "README.md", "current readme\nsecond line\n")
+    write(snapshot_root .. PATHSEP .. "manifest.json", "{\"name\":\"manifest\"}\n")
+
+    local agent = tools.register_agent_tools(Agent({
+      compact_implementation_tools = true,
+      capabilities = {
+        stream_responses = true,
+        tool_calling = true
+      }
+    }))
+    local conversation = Conversation(agent, snapshot_root)
+    local calls = {
+      {
+        id = "call_read",
+        name = "read",
+        arguments = {
+          path = "README.md"
+        }
+      },
+      {
+        id = "call_search",
+        name = "search",
+        arguments = {
+          directory = snapshot_root,
+          text = "old-name",
+          search_type = "plain"
+        }
+      },
+      {
+        id = "call_list",
+        name = "list",
+        arguments = {
+          directory = snapshot_root,
+          recursive = false
+        }
+      },
+      {
+        id = "call_info",
+        name = "file_info",
+        arguments = {
+          path = "README.md"
+        }
+      }
+    }
+    conversation:add("tool_call", "", {
+      autosave = false,
+      meta = {
+        provider_message = agent:tool_call_provider_message(calls)
+      }
+    })
+    local results = {
+      call_read = "first line\nsecond line\nthird line\n",
+      call_search = snapshot_root .. "/README.md:1:old-name reference\n" .. snapshot_root .. "/manifest.json:2:old-name reference",
+      call_list = snapshot_root .. "/README.md\n" .. snapshot_root .. "/manifest.json",
+      call_info = "path: " .. snapshot_root .. "/README.md\ntype: file\nsize: 12\nmodified: 1\nhash: abc123"
+    }
+    for _, call in ipairs(calls) do
+      conversation:add("tool_result", results[call.id], {
+        autosave = false,
+        meta = {
+          provider_message = agent:tool_result_provider_message(call, results[call.id])
+        }
+      })
+    end
+    conversation:add("assistant", "Done.", { autosave = false })
+
+    local payload = agent:build_payload(conversation)
+    payload.messages = without_environment_messages(payload.messages)
+    config.plugins.assistant.compact_tool_history = old_compact
+    local encoded = json.encode(payload.messages)
+    test.equal(encoded:find("Current File Context", 1, true) ~= nil, true)
+    test.equal(encoded:find("Completed File Inspections", 1, true) ~= nil, true)
+    test.equal(encoded:find("searched `", 1, true) ~= nil, true)
+    test.equal(encoded:find("Read File: README.md", 1, true) ~= nil, true)
+    test.equal(encoded:find("current readme", 1, true) ~= nil, true)
+    test.equal(encoded:find("call_read", 1, true), nil)
+    test.equal(encoded:find("Tool `read` result:", 1, true), nil)
+    test.equal(payload.messages[#payload.messages].content, "Done.")
+  end)
+
+  test.it("does not summarize failed file inspection tool calls as completed inspections", function()
+    local old_compact = config.plugins.assistant.compact_tool_history
+    config.plugins.assistant.compact_tool_history = true
+
+    local agent = tools.register_agent_tools(Agent({
+      compact_implementation_tools = true,
+      capabilities = {
+        stream_responses = true,
+        tool_calling = true
+      }
+    }))
+    local conversation = Conversation(agent, snapshot_root)
+    local call = {
+      id = "call_failed_search",
+      name = "search",
+      arguments = {
+        directory = snapshot_root,
+        text = "old-name",
+        search_type = "plain"
+      }
+    }
+    conversation:add("tool_call", "", {
+      autosave = false,
+      meta = {
+        provider_message = agent:tool_call_provider_message({ call })
+      }
+    })
+    local result = "tool error: search query is too broad for this exact replacement task"
+    conversation:add("tool_result", result, {
+      autosave = false,
+      meta = {
+        provider_message = agent:tool_result_provider_message(call, result)
+      }
+    })
+    conversation:add("assistant", "Done.", { autosave = false })
+
+    local payload = agent:build_payload(conversation)
+    payload.messages = without_environment_messages(payload.messages)
+    config.plugins.assistant.compact_tool_history = old_compact
+    local encoded = json.encode(payload.messages)
+    test.equal(encoded:find("Completed File Inspections", 1, true), nil)
+    test.equal(encoded:find("searched `", 1, true), nil)
+    test.equal(encoded:find("tool error: search query is too broad", 1, true), nil)
+  end)
+
+  test.it("compacts completed historical file mutation tool calls before provider requests", function()
+    local old_compact = config.plugins.assistant.compact_tool_history
+    config.plugins.assistant.compact_tool_history = true
+
+    common.rm(snapshot_root, true)
+    mkdirp(snapshot_root)
+    write(snapshot_root .. PATHSEP .. "main.c", "after\n")
+
+    local agent = tools.register_agent_tools(Agent({
+      compact_implementation_tools = true,
+      capabilities = {
+        stream_responses = true,
+        tool_calling = true
+      }
+    }))
+    local conversation = Conversation(agent, snapshot_root)
+    local call = {
+      id = "call_edit",
+      name = "edit",
+      arguments = {
+        path = "main.c",
+        edits = {
+          {
+            oldText = "before\n",
+            newText = "after\n"
+          }
+        }
+      }
+    }
+    conversation:add("tool_call", "", {
+      autosave = false,
+      meta = {
+        provider_message = agent:tool_call_provider_message({ call })
+      }
+    })
+    local result = "Successfully replaced 1 block(s) in main.c.\n--- main.c\n+++ main.c\n@@\n-before\n+after"
+    conversation:add("tool_result", result, {
+      autosave = false,
+      meta = {
+        provider_message = agent:tool_result_provider_message(call, result)
+      }
+    })
+    conversation:add("assistant", "Done.", { autosave = false })
+
+    local payload = agent:build_payload(conversation)
+    payload.messages = without_environment_messages(payload.messages)
+    config.plugins.assistant.compact_tool_history = old_compact
+    local encoded = json.encode(payload.messages)
+    test.equal(encoded:find("# Already Applied Changes", 1, true) ~= nil, true)
+    test.equal(encoded:find("Edited File: main.c", 1, true) ~= nil, true)
+    test.equal(encoded:find("after\\n", 1, true) ~= nil, true)
+    test.equal(encoded:find("call_edit", 1, true), nil)
+    test.equal(encoded:find("before\\n", 1, true), nil)
+    test.equal(encoded:find("Tool `edit` result:", 1, true), nil)
+    test.equal(payload.messages[#payload.messages].content, "Done.")
+  end)
+
+  test.it("does not keep stale read snapshots after later file mutations", function()
+    local old_compact = config.plugins.assistant.compact_tool_history
+    config.plugins.assistant.compact_tool_history = true
+
+    common.rm(snapshot_root, true)
+    mkdirp(snapshot_root)
+    write(snapshot_root .. PATHSEP .. "README.md", "after\n")
+
+    local agent = tools.register_agent_tools(Agent({
+      compact_implementation_tools = true,
+      capabilities = {
+        stream_responses = true,
+        tool_calling = true
+      }
+    }))
+    local conversation = Conversation(agent, snapshot_root)
+    local read_call = {
+      id = "call_read_old",
+      name = "read",
+      arguments = { path = "README.md" }
+    }
+    conversation:add("tool_call", "", {
+      autosave = false,
+      meta = {
+        provider_message = agent:tool_call_provider_message({ read_call })
+      }
+    })
+    conversation:add("tool_result", "before\n", {
+      autosave = false,
+      meta = {
+        provider_message = agent:tool_result_provider_message(read_call, "before\n")
+      }
+    })
+    local edit_call = {
+      id = "call_edit_after_read",
+      name = "edit",
+      arguments = {
+        path = "README.md",
+        edits = {
+          {
+            oldText = "before\n",
+            newText = "after\n"
+          }
+        }
+      }
+    }
+    conversation:add("tool_call", "", {
+      autosave = false,
+      meta = {
+        provider_message = agent:tool_call_provider_message({ edit_call })
+      }
+    })
+    conversation:add("tool_result", "Successfully replaced 1 block(s) in README.md.", {
+      autosave = false,
+      meta = {
+        provider_message = agent:tool_result_provider_message(edit_call, "Successfully replaced 1 block(s) in README.md.")
+      }
+    })
+    conversation:add("assistant", "Done.", { autosave = false })
+
+    local payload = agent:build_payload(conversation)
+    payload.messages = without_environment_messages(payload.messages)
+    config.plugins.assistant.compact_tool_history = old_compact
+    local encoded = json.encode(payload.messages)
+    test.equal(encoded:find("Edited File: README.md", 1, true) ~= nil, true)
+    test.equal(encoded:find("after\\n", 1, true) ~= nil, true)
+    test.equal(encoded:find("before\\n", 1, true), nil)
+    test.equal(encoded:find("Read File: README.md", 1, true) ~= nil, true)
+  end)
+
+  test.it("compacts completed historical web tool calls before provider requests", function()
+    local old_compact = config.plugins.assistant.compact_tool_history
+    config.plugins.assistant.compact_tool_history = true
+
+    local agent = tools.register_agent_tools(Agent({
+      compact_implementation_tools = true,
+      capabilities = {
+        stream_responses = true,
+        tool_calling = true
+      }
+    }))
+    local conversation = Conversation(agent, snapshot_root)
+    local call = {
+      id = "call_web",
+      name = "web_fetch",
+      arguments = {
+        url = "https://example.com/large"
+      }
+    }
+    conversation:add("tool_call", "", {
+      autosave = false,
+      meta = {
+        provider_message = agent:tool_call_provider_message({ call })
+      }
+    })
+    local result = "status: 200\nurl: https://example.com/large\nbody:\n" .. string.rep("huge html\n", 2000)
+    conversation:add("tool_result", result, {
+      autosave = false,
+      meta = {
+        provider_message = agent:tool_result_provider_message(call, result)
+      }
+    })
+    conversation:add("assistant", "Done.", { autosave = false })
+
+    local payload = agent:build_payload(conversation)
+    payload.messages = without_environment_messages(payload.messages)
+    config.plugins.assistant.compact_tool_history = old_compact
+    local encoded = json.encode(payload.messages)
+    test.equal(encoded:find("# Prior Web Lookups", 1, true) ~= nil, true)
+    test.equal(encoded:find("https://example.com/large", 1, true) ~= nil, true)
+    test.equal(encoded:find("call_web", 1, true), nil)
+    test.equal(encoded:find("huge html\\nhuge html\\nhuge html\\nhuge html\\nhuge html\\nhuge html", 1, true), nil)
+    test.equal(payload.messages[#payload.messages].content, "Done.")
+  end)
+
   test.it("repairs missing tool outputs before provider requests", function()
     local agent = Agent({
       capabilities = {
@@ -1043,6 +1346,66 @@ test.describe("assistant agent", function()
     test.equal(ok, false)
     test.equal(called, false)
     test.equal(result:find("missing patch argument", 1, true) ~= nil, true)
+  end)
+
+  test.it("narrows broad substring searches for exact replacement prompts", function()
+    local core = require "core"
+    local root = assistant_test_temp_path("exact-replacement-search")
+    mkdirp(root)
+    write(root .. PATHSEP .. "README.md", "old-org/old-repo\nold-org\n")
+
+    local old_projects = core.projects
+    core.projects = { { path = root } }
+
+    local agent = tools.register_agent_tools(Agent())
+    local conversation = Conversation(agent, root)
+    conversation:add(
+      "user",
+      "update all references on this project from old-org/old-repo to new-org/new-repo",
+      { autosave = false }
+    )
+    agent._assistant_tool_conversation = conversation
+
+    local ok, result = agent:execute_tool({
+      name = "search",
+      arguments = {
+        directory = root,
+        text = "old-org",
+        search_type = "plain"
+      }
+    })
+
+    test.equal(ok, true)
+    test.equal(result:find("was narrowed to the exact old value", 1, true) ~= nil, true)
+    test.equal(result:find("README.md", 1, true) ~= nil, true)
+    test.equal(result:find("README.md:2:old%-org") ~= nil, false)
+
+    ok, result = agent:execute_tool({
+      name = "search",
+      arguments = {
+        directory = root,
+        text = "Old-Org",
+        search_type = "plain"
+      }
+    })
+
+    test.equal(ok, true)
+    test.equal(result:find("was narrowed to the exact old value", 1, true) ~= nil, true)
+
+    ok, result = agent:execute_tool({
+      name = "search",
+      arguments = {
+        directory = root,
+        text = "old-org/old-repo",
+        search_type = "plain"
+      }
+    })
+
+    agent._assistant_tool_conversation = nil
+    core.projects = old_projects
+
+    test.equal(ok, true)
+    test.equal(result:find("README.md", 1, true) ~= nil, true)
   end)
 
   test.it("classifies read-only and unsafe shell commands", function()

@@ -65,6 +65,8 @@ test.describe("assistant conversation", function()
 
   test.it("updates memory content without changing its id", function()
     local item = Conversation.add_memory(root, "Old Rule", "Prefer old patches.")
+    test.equal(system.get_file_info(Conversation.memory_path(root, item.id)) ~= nil, true)
+    test.equal(Conversation.memory_path(root, item.id):match("%.lua$") ~= nil, true)
 
     local updated = Conversation.update_memory(root, item.id, "New Rule", "Prefer focused patches.")
     local memories = Conversation.list_memories(root)
@@ -155,6 +157,8 @@ test.describe("assistant conversation", function()
     conversation:add("user", "hello")
     conversation.title = "Saved Session"
     test.equal(conversation:save(), true)
+    test.equal(system.get_file_info(Conversation.session_path(root, conversation.id)) ~= nil, true)
+    test.equal(Conversation.session_path(root, conversation.id):match("%.lua$") ~= nil, true)
 
     local list = Conversation.list(root)
     test.equal(#list, 1)

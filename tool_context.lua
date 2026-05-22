@@ -18,6 +18,26 @@ context.FILE_CHUNK_SIZE = 64 * 1024
 context.OMITTED_TOOL_ARGUMENT_PATTERN = "^%[omitted %d+ bytes from prior tool argument `[^`]+`%]$"
 
 local confirm_write
+local active_conversation
+
+---Return the conversation whose tool call is currently executing.
+---@return assistant.Conversation|nil conversation
+function context.active_conversation()
+  return active_conversation
+end
+
+---Run a callback while exposing the active conversation to tool helpers.
+---@param conversation assistant.Conversation|nil Conversation associated with the tool call.
+---@param callback fun(): ...
+---@return ...
+function context.with_active_conversation(conversation, callback)
+  local previous = active_conversation
+  active_conversation = conversation
+  local ok, a, b, c, d = pcall(callback)
+  active_conversation = previous
+  if not ok then error(a) end
+  return a, b, c, d
+end
 
 ---Yield to Pragtical's UI loop when running inside a coroutine.
 function context.yield_ui()

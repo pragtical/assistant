@@ -5,6 +5,7 @@ local json = require "core.json"
 local jsonutil = require "plugins.assistant.jsonutil"
 local history_normalizer = require "plugins.assistant.history_normalizer"
 local Tool = require "plugins.assistant.tool"
+local tool_context = require "plugins.assistant.tool_context"
 local tool_router = require "plugins.assistant.tool_router"
 local Object = require "core.object"
 local unpack = table.unpack or unpack
@@ -581,6 +582,9 @@ function Agent:get_mode_instructions(conversation)
     local lines = {
       "Collaboration mode: Implementation.",
       "Carry out the user's requested implementation using the available tools.",
+      "When the user asks to replace or update a specific string, repository slug, URL, symbol, or path, keep the scope to that exact value and obvious direct variants unless the user explicitly asks to broaden it.",
+      "For exact replacement tasks, first search for the complete old value exactly as given. Do not search for or edit broader substrings, adjacent product names, workflow names, comments, or dependency/tooling URLs unless they also contain the complete old value or the user explicitly requests that broader rename.",
+      "For local project editing tasks, prefer local inspection tools. Use web tools only when the user asks for current external information or local project context is insufficient.",
     }
     for _, line in ipairs(edit_instructions) do table.insert(lines, line) end
     table.insert(lines, "Use exec_command for shell commands, exec_status to poll, write_stdin to send input, send_eof to close stdin, interrupt_exec to interrupt, and close_exec to terminate an ongoing command session.")
@@ -1517,7 +1521,11 @@ function Agent:execute_tool(call)
     local value = call.arguments and call.arguments[param.name]
     args[index] = value
   end
-  local ok, result, output = pcall(tool.callback, unpack(args, 1, count))
+  local ok, result, output = pcall(function()
+    return tool_context.with_active_conversation(self._assistant_tool_conversation, function()
+      return tool.callback(unpack(args, 1, count))
+    end)
+  end)
   if not ok then return false, result end
   if result == false then return false, output or "tool failed" end
   if result == true and output ~= nil then return true, output end

@@ -320,6 +320,14 @@ local function max_tool_call_rounds()
   return math.floor(rounds)
 end
 
+---Return maximum identical tool calls allowed in one assistant turn.
+local function max_repeated_tool_calls()
+  local conf = config.plugins.assistant or {}
+  local calls = tonumber(conf.max_repeated_tool_calls) or 4
+  if calls < 1 then calls = 1 end
+  return math.floor(calls)
+end
+
 ---Handle provider timeout.
 local function provider_timeout(agent)
   local timeout_ms = configured_timeout_ms(agent)
@@ -374,12 +382,65 @@ local function stable_encode(value)
 end
 
 ---Handle tool call signature.
+local function literal_regex_text(text)
+  text = tostring(text or "")
+  return text:find("[%.%^%$%*%+%?%(%)%[%]%{%}%|\\]") == nil
+end
+
+---Return normalized arguments for repeated-call detection.
+local function normalized_tool_arguments_for_signature(name, arguments)
+  if type(arguments) ~= "table" then return arguments end
+  local normalized = Tool.clone_table(arguments)
+  if name == "search" then
+    normalized.search_type = normalized.search_type or "plain"
+    if normalized.search_type == "regex" and literal_regex_text(normalized.text) then
+      normalized.search_type = "plain"
+    end
+  end
+  return normalized
+end
+
+---Handle tool call signature.
 local function tool_call_signature(agent, call)
   local name = call and call.name
   if agent and agent.resolve_tool_name then
     name = agent:resolve_tool_name(name)
   end
-  return tostring(name or "unknown") .. ":" .. stable_encode(call and call.arguments or {})
+  local arguments = call and call.arguments or {}
+  if type(arguments) == "string" then
+    local decoded = json.decode(arguments)
+    if decoded ~= nil then arguments = decoded end
+  end
+  arguments = normalized_tool_arguments_for_signature(name, arguments)
+  return tostring(name or "unknown") .. ":" .. stable_encode(arguments)
+end
+
+---Clear a table in place.
+local function clear_table(value)
+  if type(value) ~= "table" then return end
+  for key in pairs(value) do value[key] = nil end
+end
+
+---Return whether a completed tool call may have changed project state.
+local function tool_call_may_mutate_project(agent, conversation, call)
+  local name = agent and agent.resolve_tool_name
+    and agent:resolve_tool_name(call and call.name)
+    or call and call.name
+  if name == "update_plan" or name == "request_user_input" then return false end
+  if agent and agent.classify_tool_call then
+    local ok, classification = pcall(agent.classify_tool_call, agent, call, conversation)
+    if ok and classification and classification.category then
+      return classification.category ~= "read_only"
+    end
+  end
+  return name == "edit"
+    or name == "write"
+    or name == "apply_patch"
+    or name == "exec_command"
+    or name == "write_stdin"
+    or name == "send_eof"
+    or name == "interrupt_exec"
+    or name == "close_exec"
 end
 
 ---Add tool result.
@@ -849,6 +910,143 @@ local function raw_request_payload(payload)
   return copy
 end
 
+---Return a stable short hash for request-audit text.
+---@param text string
+---@return string
+local function audit_hash(text)
+  text = tostring(text or "")
+  local hash = 2166136261
+  for index = 1, #text do
+    hash = (hash * 16777619 + text:byte(index)) % 4294967296
+  end
+  return string.format("%08x", hash)
+end
+
+---Return a compact preview for request-audit entries.
+---@param text string
+---@return string
+local function audit_preview(text)
+  text = tostring(text or ""):gsub("%s+", " "):match("^%s*(.-)%s*$") or ""
+  if #text > 220 then text = text:sub(1, 220) .. "..." end
+  return text
+end
+
+---Return the text content of a provider message.
+---@param message table
+---@return string
+local function provider_message_text(message)
+  if type(message) ~= "table" then return "" end
+  local content = message.content or message.output or ""
+  if type(content) == "string" then return content end
+  if type(content) ~= "table" then return tostring(content or "") end
+  local parts = {}
+  for _, item in ipairs(content) do
+    if type(item) == "table" and type(item.text) == "string" then
+      table.insert(parts, item.text)
+    elseif type(item) == "table" and item.type then
+      table.insert(parts, "[" .. tostring(item.type) .. "]")
+    end
+  end
+  return table.concat(parts, "\n")
+end
+
+---Return function/tool call summaries for a provider message.
+---@param message table
+---@return table[]
+local function provider_message_tool_calls(message)
+  local calls = {}
+  if type(message) ~= "table" then return calls end
+  if type(message.tool_calls) == "table" then
+    for _, call in ipairs(message.tool_calls) do
+      local fn = type(call) == "table" and type(call["function"]) == "table" and call["function"] or {}
+      local args = tostring(fn.arguments or "")
+      table.insert(calls, {
+        id = call.id,
+        name = fn.name,
+        arguments_bytes = #args,
+        arguments_hash = audit_hash(args),
+        arguments_preview = audit_preview(args)
+      })
+    end
+  elseif message.type == "function_call" then
+    local args = tostring(message.arguments or "")
+    table.insert(calls, {
+      id = message.call_id or message.id,
+      name = message.name,
+      arguments_bytes = #args,
+      arguments_hash = audit_hash(args),
+      arguments_preview = audit_preview(args)
+    })
+  end
+  return calls
+end
+
+---Build a request audit that explains what the provider will see without
+---duplicating full prompts, file contents, or tool outputs.
+---@param agent assistant.Agent
+---@param conversation assistant.Conversation
+---@param payload table
+---@param round integer
+---@return table
+local function request_audit_payload(agent, conversation, payload, round)
+  local messages = type(payload) == "table" and type(payload.messages) == "table" and payload.messages or {}
+  local message_summaries = {}
+  local totals = {
+    messages = #messages,
+    content_bytes = 0,
+    tool_calls = 0,
+    tool_results = 0,
+    duplicate_tool_notices = 0,
+    loop_warnings = 0
+  }
+  local tool_result_counts = {}
+  for index, message in ipairs(messages) do
+    local text = provider_message_text(message)
+    local calls = provider_message_tool_calls(message)
+    local role = tostring(type(message) == "table" and (message.role or message.type) or "")
+    totals.content_bytes = totals.content_bytes + #text
+    totals.tool_calls = totals.tool_calls + #calls
+    if role == "tool" or role == "function_call_output" then
+      totals.tool_results = totals.tool_results + 1
+      local tool_name = text:match("^Tool `([^`]+)` result:")
+      if tool_name then
+        tool_result_counts[tool_name] = (tool_result_counts[tool_name] or 0) + 1
+      end
+      if text:find("Repeated tool call skipped", 1, true) then
+        totals.duplicate_tool_notices = totals.duplicate_tool_notices + 1
+      end
+      if text:find("repeated tool call loop detected", 1, true) then
+        totals.loop_warnings = totals.loop_warnings + 1
+      end
+    end
+    table.insert(message_summaries, {
+      index = index,
+      role = role,
+      bytes = #text,
+      hash = audit_hash(text),
+      preview = audit_preview(text),
+      tool_call_id = type(message) == "table" and (message.tool_call_id or message.call_id) or nil,
+      tool_calls = #calls > 0 and calls or nil
+    })
+  end
+  return {
+    round = round or 0,
+    agent = agent and agent.name,
+    model = payload and payload.model or agent and agent.model,
+    conversation_id = conversation and conversation.id,
+    status = conversation and conversation.status,
+    compact_tool_history = config.plugins.assistant.compact_tool_history == true,
+    compact_tool_results = config.plugins.assistant.compact_tool_results == true,
+    local_compaction = conversation and conversation.local_compaction and {
+      message_count = conversation.local_compaction.message_count,
+      summary_bytes = #(conversation.local_compaction.summary or "")
+    } or nil,
+    totals = totals,
+    tool_result_counts = tool_result_counts,
+    messages = message_summaries
+  }
+end
+
 ---Normalize plan items.
 local function normalize_plan_items(items)
   if type(items) ~= "table" then return nil, "plan items must be an array" end
@@ -1145,8 +1343,8 @@ function HttpBackend:send(agent, conversation, callback)
   local stream_error
   local tools_enabled = has_tool_payload(agent)
   local parse_tools = can_parse_tool_calls(agent)
-  local last_tool_call_signature
-  local consecutive_tool_call_count = 0
+  local tool_call_counts = {}
+  local tool_result_cache = {}
 
   ---Compact deferred tool results after a model continuation has completed.
   local function compact_after_done()
@@ -1334,12 +1532,7 @@ function HttpBackend:send(agent, conversation, callback)
         return
       end
       local signature = tool_call_signature(agent, call)
-      if signature == last_tool_call_signature then
-        consecutive_tool_call_count = consecutive_tool_call_count + 1
-      else
-        last_tool_call_signature = signature
-        consecutive_tool_call_count = 1
-      end
+      tool_call_counts[signature] = (tool_call_counts[signature] or 0) + 1
       local provider_message = agent:tool_call_provider_message(calls, index)
       conversation:add("tool_call", agent:tool_call_display(call), {
         meta = {
@@ -1349,13 +1542,44 @@ function HttpBackend:send(agent, conversation, callback)
       })
       add_tool_activity(agent, conversation, call, "requested")
       notify_activity_update()
-      if consecutive_tool_call_count > 1 then
+      if tool_call_counts[signature] > 1 then
+        local cached = tool_result_cache[signature]
+        if not cached and tool_call_counts[signature] > max_repeated_tool_calls() then
+          local result = string.format(
+            "repeated tool call loop detected: `%s` was called %d times with the same arguments in one turn. Stop inspecting and proceed with the available results, or ask the user how to continue.",
+            tostring(resolved_name or call.name or "tool"),
+            tool_call_counts[signature]
+          )
+          add_tool_activity(agent, conversation, call, "completed", result)
+          add_tool_result(agent, conversation, call, result, "error")
+          fail(result)
+          return
+        end
+        local result = "repeated tool call suppressed; the same tool and arguments were already executed in this turn."
+        local status = "error"
+        if cached then
+          status = cached.status or "ok"
+          result = tostring(cached.result or "")
+          if tool_call_counts[signature] > 2 then
+            result = result .. "\n\nThis exact tool call has already been answered. Do not call it again; continue with the available result and provide the next useful response."
+          end
+          if tool_call_counts[signature] > max_repeated_tool_calls() then
+            result = result .. "\n\nThe same cached tool call has repeated too many times, so this tool loop is being stopped without running the tool again. No more tool calls will be available in the next continuation; provide the final answer using the available results."
+            add_tool_activity(agent, conversation, call, "completed", result)
+            add_tool_result(agent, conversation, call, result, status)
+            conversation:set_status("working", { autosave = false })
+            agent:set_loading(true)
+            post_once(round + 1, true)
+            return
+          end
+        end
+        add_tool_activity(agent, conversation, call, cached and "completed" or "failed", result)
         add_tool_result(
           agent,
           conversation,
           call,
-          "repeated tool call suppressed; the same tool and arguments were already executed in this turn. Use the previous tool result to answer the user.",
-          "error"
+          result,
+          status
         )
         index = index + 1
         ask_next()
@@ -1367,6 +1591,9 @@ function HttpBackend:send(agent, conversation, callback)
         agent = agent,
         conversation = conversation,
         call = call,
+        signature = signature,
+        result_cache = tool_result_cache,
+        tool_call_counts = tool_call_counts,
         resume = function()
           index = index + 1
           ask_next()
@@ -1443,7 +1670,7 @@ function HttpBackend:send(agent, conversation, callback)
   end
 
   ---Handle send streaming.
-  local function send_streaming(payload, body, round)
+  local function send_streaming(payload, body, round, tools_available)
     local response_info
     local pending = ""
     local error_chunks = {}
@@ -1564,7 +1791,8 @@ function HttpBackend:send(agent, conversation, callback)
         end
         if emit_text then emit_partial(false) end
       end
-      if parse_tools
+      if tools_available
+        and parse_tools
         and agent.parse_stream_tool_call_deltas
         and not (plan_stream_state and plan_stream_state:is_complete())
       then
@@ -1625,7 +1853,7 @@ function HttpBackend:send(agent, conversation, callback)
             or table.concat(chunks)
           final_text = final_text or table.concat(chunks)
           local text_tool_calls = {}
-          if parse_tools and not has_streamed_tool_calls then
+          if tools_available and parse_tools and not has_streamed_tool_calls then
             text_tool_calls = parse_text_tool_calls(agent, final_text)
             if #text_tool_calls == 0 and looks_like_text_tool_call(reasoning_text) then
               text_tool_calls = parse_text_tool_calls(agent, reasoning_text)
@@ -1643,9 +1871,11 @@ function HttpBackend:send(agent, conversation, callback)
             callback(true, nil, sanitize_plan_response(final_text), { done = true, info = info, usage = usage })
             compact_after_done()
           elseif has_streamed_tool_calls and not plan_completed then
+            compact_after_done()
             chunks = {}
             request_tool_approval(finalize_stream_tool_calls(streamed_tool_calls), round or 0, true)
           elseif text_tool_calls and #text_tool_calls > 0 then
+            compact_after_done()
             chunks = {}
             partial_text = ""
             request_tool_approval(text_tool_calls, round or 0, true)
@@ -1674,24 +1904,30 @@ function HttpBackend:send(agent, conversation, callback)
     })
   end
 
-  post_once = function(round)
+  post_once = function(round, without_tools)
     if self:is_cancelled() then
       fail("request cancelled")
       return
     end
     round = round or 0
     local payload = agent:build_payload(conversation)
-    if tools_enabled then
+    local tools_available = tools_enabled and not without_tools
+    if tools_available then
       payload.parallel_tool_calls = false
       if payload.stream and not supports_stream_tool_calls(agent) then
         payload.stream = false
       end
+    elseif without_tools then
+      payload.tools = nil
+      payload.tool_choice = nil
+      payload.parallel_tool_calls = nil
     end
     local body = jsonutil.encode(payload)
     conversation:append_raw_response("http-request", raw_request_payload(payload))
+    conversation:append_raw_response("http-request-audit", request_audit_payload(agent, conversation, payload, round))
 
     if payload.stream then
-      send_streaming(payload, body, round)
+      send_streaming(payload, body, round, tools_available)
       return
     end
 
@@ -1703,7 +1939,7 @@ function HttpBackend:send(agent, conversation, callback)
       on_done = function(ok, err, result, info)
         if ok and not is_http_error(info) then
           conversation:append_raw_response("http-response", result)
-          local tool_calls = parse_tools and agent:parse_tool_calls(result) or {}
+          local tool_calls = tools_available and parse_tools and agent:parse_tool_calls(result) or {}
           local response_text = agent:parse_response(result)
           local parsed_usage = agent:parse_usage(result)
           if parsed_usage and conversation.set_usage then
@@ -1712,6 +1948,7 @@ function HttpBackend:send(agent, conversation, callback)
           if tool_calls and #tool_calls > 0 and is_plan_mode(agent, conversation) and contains_completed_plan(response_text) then
             finish(response_text, info, parsed_usage)
           elseif tool_calls and #tool_calls > 0 then
+            compact_after_done()
             request_tool_approval(tool_calls, round, false)
           else
             finish(response_text, info, parsed_usage)
@@ -1802,6 +2039,16 @@ function HttpBackend:resolve_tool_call(agent, conversation, request, decision, c
       return
     end
     add_tool_activity(agent, conversation, call, ok and "completed" or "failed", result)
+    if pending.result_cache and pending.signature then
+      if ok and tool_call_may_mutate_project(agent, conversation, call) then
+        clear_table(pending.result_cache)
+        clear_table(pending.tool_call_counts)
+      end
+      pending.result_cache[pending.signature] = {
+        status = ok and "ok" or "error",
+        result = result
+      }
+    end
     add_tool_result(agent, conversation, call, result, ok and "ok" or "error")
     conversation:set_status("working", { autosave = false })
     if callback then callback(true) end

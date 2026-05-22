@@ -26,6 +26,67 @@ local function compact_web_activity(call, status)
   return "**Searching web**: " .. (target ~= "" and target or "web") .. Tool.status_suffix(status)
 end
 
+---Return whether a web result represents a successful request.
+---@param _ table|nil
+---@param result_message table|nil
+---@return boolean
+local function web_result_is_successful(_, result_message)
+  local content = tostring(result_message and (result_message.content or result_message.output) or "")
+  if content == "" then return false end
+  if content:find("^tool error:", 1, false) then return false end
+  if content:find("user denied web request", 1, true) then return false end
+  return true
+end
+
+---Return a short historical web result summary.
+---@param message table|nil
+---@param _ table|nil
+---@param included_ids table|nil
+---@param result_texts table|nil
+---@return table[]
+local function compact_web_history(message, _, included_ids, result_texts)
+  local rows = {
+    "# Prior Web Lookups",
+    "",
+    "Historical web tool calls were omitted from provider history. Use these summaries only as background; fetch again only if the user asks for current external information or the previous result is insufficient.",
+    ""
+  }
+  local inserted = false
+  for _, provider_call in ipairs(type(message) == "table" and message.tool_calls or {}) do
+    local id = tostring(provider_call.id or "")
+    if id ~= "" and included_ids and included_ids[id] then
+      local fn = provider_call["function"] or {}
+      local args = {}
+      if type(fn.arguments) == "string" then
+        pcall(function() args = json.decode(fn.arguments) or {} end)
+      elseif type(fn.arguments) == "table" then
+        args = fn.arguments
+      end
+      local target = tostring(args.url or args.query or "web")
+      local result = tostring(result_texts and result_texts[id] or "")
+      table.insert(rows, "- `" .. tostring(fn.name or provider_call.name or "web") .. "`: " .. target)
+      local status = result:match("status:%s*([^\n]+)")
+      local url = result:match("url:%s*([^\n]+)") or result:match("Fetched URL:%s*([^\n]+)")
+      if status then table.insert(rows, "  - status: " .. status) end
+      if url and url ~= target then table.insert(rows, "  - fetched: " .. url) end
+      local sample = Tool.first_lines(result:gsub("^Tool `%w+` result:%s*", ""), 5)
+      if sample ~= "" then
+        table.insert(rows, "")
+        table.insert(rows, Tool.fenced(sample, "text"))
+        table.insert(rows, "")
+      end
+      inserted = true
+    end
+  end
+  if not inserted then return {} end
+  return {
+    {
+      role = "assistant",
+      content = table.concat(rows, "\n")
+    }
+  }
+end
+
 ---Handle web fetch raw.
 ---@param url string
 ---@param method string?
@@ -274,6 +335,8 @@ webtools.tools = {
     name = "web_fetch",
     callback = webtools.web_fetch,
     compact_result = compact("web fetch"),
+    result_is_successful = web_result_is_successful,
+    compact_history = compact_web_history,
     activity_label = function() return "Searching web" end,
     compact_activity_markdown = compact_web_activity,
     description = "Fetch an HTTP or HTTPS URL with Pragtical core.http after user confirmation.",
@@ -291,6 +354,8 @@ webtools.tools = {
     name = "web_search",
     callback = webtools.web_search,
     compact_result = compact("web search"),
+    result_is_successful = web_result_is_successful,
+    compact_history = compact_web_history,
     activity_label = function() return "Searching web" end,
     compact_activity_markdown = compact_web_activity,
     description = "Search the web using the configured assistant web search page or JSON endpoint.",
@@ -306,6 +371,8 @@ webtools.tools = {
     name = "web_find",
     callback = webtools.web_find,
     compact_result = compact("web find"),
+    result_is_successful = web_result_is_successful,
+    compact_history = compact_web_history,
     activity_label = function() return "Searching web" end,
     compact_activity_markdown = compact_web_activity,
     description = "Fetch a URL and return lines matching a pattern.",

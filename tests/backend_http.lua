@@ -1405,6 +1405,8 @@ test.describe("assistant http backend", function()
   test.it("sends fresh tool results un-compacted and compacts them after final response", function()
     local restore_background_threads = run_background_threads_immediately()
     local old_post = http.post
+    local old_compact = config.plugins.assistant.compact_tool_results
+    config.plugins.assistant.compact_tool_results = true
     local calls = 0
     local second_body
     local large_result = string.rep("0123456789", 7000)
@@ -1462,6 +1464,7 @@ test.describe("assistant http backend", function()
     end)
 
     http.post = old_post
+    config.plugins.assistant.compact_tool_results = old_compact
     restore_background_threads()
     local fresh_tool_message = second_body.messages[#second_body.messages]
     local stored_tool_message
@@ -3015,12 +3018,16 @@ test.describe("assistant http backend", function()
     test.equal(second_body.messages[#second_body.messages].content:find("Use this result to answer", 1, true) ~= nil, true)
     test.equal(third_body.messages[#third_body.messages].role, "tool")
     test.equal(
-      third_body.messages[#third_body.messages].content:find("repeated tool call suppressed", 1, true) ~= nil,
+      third_body.messages[#third_body.messages].content:find("a.lua", 1, true) ~= nil,
       true
+    )
+    test.equal(
+      third_body.messages[#third_body.messages].content:find("Repeated tool call skipped", 1, true),
+      nil
     )
   end)
 
-  test.it("allows repeated identical tool calls after an intervening different tool call", function()
+  test.it("returns cached results for repeated identical tool calls after an intervening different tool call", function()
     local restore_background_threads = run_background_threads_immediately()
     local old_post = http.post
     local calls = 0
@@ -3093,8 +3100,75 @@ test.describe("assistant http backend", function()
 
     http.post = old_post
     restore_background_threads()
-    test.equal(reads, 2)
+    test.equal(reads, 1)
     test.equal(lists, 1)
+    test.equal(response, "done")
+  end)
+
+  test.it("treats literal regex and plain searches as repeated inspections", function()
+    local restore_background_threads = run_background_threads_immediately()
+    local old_post = http.post
+    local calls = 0
+    local searches = 0
+    http.post = function(_, _, _, options)
+      calls = calls + 1
+      if calls == 1 then
+        options.on_done(true, nil, {
+          choices = {
+            {
+              message = {
+                role = "assistant",
+                content = "<function=search>\n<parameter=directory>\nproject\n</parameter>\n<parameter=text>\nold-name\n</parameter>\n<parameter=search_type>\nregex\n</parameter>\n</function>"
+              }
+            }
+          }
+        }, { status = 200 })
+      elseif calls == 2 then
+        options.on_done(true, nil, {
+          choices = {
+            {
+              message = {
+                role = "assistant",
+                content = "<function=search>\n<parameter=directory>\nproject\n</parameter>\n<parameter=text>\nold-name\n</parameter>\n<parameter=search_type>\nplain\n</parameter>\n</function>"
+              }
+            }
+          }
+        }, { status = 200 })
+      else
+        options.on_done(true, nil, {
+          choices = {
+            { message = { content = "done" } }
+          }
+        }, { status = 200 })
+      end
+    end
+
+    local agent = Ollama({ stream = false })
+    agent:register_tool("search", {
+      callback = function()
+        searches = searches + 1
+        return "project/README.md:1:old-name"
+      end,
+      read_only = true,
+      params = {
+        { name = "directory", type = "string" },
+        { name = "text", type = "string" },
+        { name = "search_type", type = "string" }
+      }
+    })
+    local conversation = Conversation(agent, "project")
+    local backend = HttpBackend()
+    local response
+
+    backend:send(agent, conversation, function(ok, _, text, meta)
+      if ok and meta and meta.done then
+        response = text
+      end
+    end)
+
+    http.post = old_post
+    restore_background_threads()
+    test.equal(searches, 1)
     test.equal(response, "done")
   end)
 

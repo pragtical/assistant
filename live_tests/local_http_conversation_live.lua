@@ -11,13 +11,20 @@ local common = require "core.common"
 local config = require "core.config"
 local http = require "core.http"
 local json = require "core.json"
+local jsonutil = require "plugins.assistant.jsonutil"
 local Conversation = require "plugins.assistant.conversation"
 local stream_state = require "plugins.assistant.stream_state"
 
 local AGENT = rawget(_G, "ASSISTANT_LIVE_HTTP_AGENT") or os.getenv("ASSISTANT_LIVE_HTTP_AGENT") or "ollama"
 local MODEL_OVERRIDE = rawget(_G, "ASSISTANT_LIVE_HTTP_MODEL") or os.getenv("ASSISTANT_LIVE_HTTP_MODEL")
+local USE_CONFIG_MODEL = rawget(_G, "ASSISTANT_LIVE_HTTP_USE_CONFIG_MODEL") == true
+  or os.getenv("ASSISTANT_LIVE_HTTP_USE_CONFIG_MODEL") == "1"
 local SCENARIO = rawget(_G, "ASSISTANT_LIVE_HTTP_SCENARIO") or os.getenv("ASSISTANT_LIVE_HTTP_SCENARIO") or "tetris"
 local PROJECT_SUBDIR = rawget(_G, "ASSISTANT_LIVE_HTTP_PROJECT_SUBDIR") or os.getenv("ASSISTANT_LIVE_HTTP_PROJECT_SUBDIR") or "tetris"
+local PROJECT_DIR_OVERRIDE = rawget(_G, "ASSISTANT_LIVE_HTTP_PROJECT_DIR") or os.getenv("ASSISTANT_LIVE_HTTP_PROJECT_DIR")
+local SINGLE_PROMPT = rawget(_G, "ASSISTANT_LIVE_HTTP_SINGLE_PROMPT") or os.getenv("ASSISTANT_LIVE_HTTP_SINGLE_PROMPT")
+local PRESERVE_PROJECT_CONVERSATIONS = rawget(_G, "ASSISTANT_LIVE_HTTP_PRESERVE_PROJECT_CONVERSATIONS") == true
+  or os.getenv("ASSISTANT_LIVE_HTTP_PRESERVE_PROJECT_CONVERSATIONS") == "1"
 local function temp_dir(name)
   local path = os.tmpname()
   os.remove(path)
@@ -41,7 +48,9 @@ local CONTINUE_PROMPT = rawget(_G, "ASSISTANT_LIVE_HTTP_CONTINUE_PROMPT")
 local MAX_CONTINUE_TURNS = tonumber(os.getenv("ASSISTANT_LIVE_HTTP_MAX_CONTINUE_TURNS") or "6")
 local PLAN_DOMAIN_KEYWORDS = rawget(_G, "ASSISTANT_LIVE_HTTP_PLAN_KEYWORDS") or { "tetris" }
 local REQUIRED_FILES = rawget(_G, "ASSISTANT_LIVE_HTTP_REQUIRED_FILES") or {}
+local EXPECTED_MENTIONS = rawget(_G, "ASSISTANT_LIVE_HTTP_EXPECTED_MENTIONS") or {}
 local project_dir
+local external_project = PROJECT_DIR_OVERRIDE ~= nil and PROJECT_DIR_OVERRIDE ~= ""
 
 local defaults = {
   ollama = {
@@ -219,6 +228,8 @@ local function live_raw_size(view)
   return size
 end
 
+local write_diagnostic_artifacts
+
 local function write_live_artifacts(view, include_markdown)
   if not (view and view.conversation) then return end
   append_live_raw_artifact(view)
@@ -232,7 +243,269 @@ local function write_live_artifacts(view, include_markdown)
     write_file(OUT_DIR .. PATHSEP .. "raw.jsonl", raw)
     view.live_artifact_raw_started = true
     view.live_artifact_raw_offset = #raw
+    write_diagnostic_artifacts(view)
   end
+end
+
+local function decode_raw_entries(raw)
+  local entries = {}
+  for line in tostring(raw or ""):gmatch("[^\r\n]+") do
+    local ok, entry = pcall(json.decode, line)
+    if ok and type(entry) == "table" then table.insert(entries, entry) end
+  end
+  return entries
+end
+
+local function append_tool_call(calls, source, name, arguments)
+  if type(name) ~= "string" or name == "" then return end
+  table.insert(calls, {
+    source = source,
+    name = name,
+    arguments = arguments
+  })
+end
+
+local function collect_tool_calls_from_payload(calls, source, payload)
+  if type(payload) ~= "table" then return end
+  local choices = payload.choices
+  if type(choices) == "table" then
+    for _, choice in ipairs(choices) do
+      local message = choice.message or {}
+      local delta = choice.delta or {}
+      for _, container in ipairs({ message, delta }) do
+        if type(container.tool_calls) == "table" then
+          for _, call in ipairs(container.tool_calls) do
+            local fn = type(call) == "table" and type(call["function"]) == "table" and call["function"] or {}
+            append_tool_call(calls, source, fn.name or call.name, fn.arguments or call.arguments)
+          end
+        end
+      end
+    end
+  end
+  local output = payload.output
+  if type(output) == "table" then
+    for _, item in ipairs(output) do
+      if type(item) == "table" and (item.type == "function_call" or item.name or item.arguments) then
+        append_tool_call(calls, source, item.name, item.arguments)
+      end
+    end
+  end
+end
+
+local function compact_json(value)
+  local ok, encoded = pcall(jsonutil.encode, value)
+  return ok and encoded or tostring(value)
+end
+
+local function tool_loop_key(call)
+  local name = call and call.name
+  if name ~= "read" and name ~= "search" and name ~= "list" and name ~= "file_info" then
+    return nil
+  end
+  local args = call.arguments
+  if type(args) == "string" then
+    local ok, decoded = pcall(json.decode, args)
+    args = ok and decoded or args
+  end
+  if type(args) ~= "table" then
+    return name .. ":" .. tostring(args or "")
+  end
+  return table.concat({
+    name,
+    tostring(args.path or ""),
+    tostring(args.directory or ""),
+    tostring(args.text or ""),
+    tostring(args.pattern or ""),
+    tostring(args.query or "")
+  }, ":")
+end
+
+local function request_audit_summary(entries)
+  local lines = {
+    "# Request And Agent Behavior Analysis",
+    "",
+    "This file is generated from `http-request-audit` raw log entries and streamed tool calls.",
+    ""
+  }
+  local audits = {}
+  for _, entry in ipairs(entries) do
+    if entry.kind == "http-request-audit" and type(entry.data) == "table" then
+      table.insert(audits, entry.data)
+    end
+  end
+  table.insert(lines, string.format("Total audited requests: %d", #audits))
+  table.insert(lines, "")
+
+  local previous_tool_results = {}
+  local previous_duplicates = 0
+  for index, audit in ipairs(audits) do
+    local totals = audit.totals or {}
+    table.insert(lines, string.format(
+      "## Request %d",
+      index
+    ))
+    table.insert(lines, "")
+    table.insert(lines, string.format(
+      "- round: %s",
+      tostring(audit.round or "")
+    ))
+    table.insert(lines, string.format(
+      "- model: %s",
+      tostring(audit.model or "")
+    ))
+    table.insert(lines, string.format(
+      "- messages: %s",
+      tostring(totals.messages or 0)
+    ))
+    table.insert(lines, string.format(
+      "- content_bytes: %s",
+      tostring(totals.content_bytes or 0)
+    ))
+    table.insert(lines, string.format(
+      "- tool_calls_in_request: %s",
+      tostring(totals.tool_calls or 0)
+    ))
+    table.insert(lines, string.format(
+      "- tool_results_in_request: %s",
+      tostring(totals.tool_results or 0)
+    ))
+    table.insert(lines, string.format(
+      "- duplicate_tool_notices: %s",
+      tostring(totals.duplicate_tool_notices or 0)
+    ))
+    table.insert(lines, string.format(
+      "- loop_warnings: %s",
+      tostring(totals.loop_warnings or 0)
+    ))
+    if audit.local_compaction then
+      table.insert(lines, string.format(
+        "- local_compaction: first %s message(s), summary_bytes=%s",
+        tostring(audit.local_compaction.message_count or ""),
+        tostring(audit.local_compaction.summary_bytes or "")
+      ))
+    end
+    table.insert(lines, string.format(
+      "- compact_tool_history: %s",
+      tostring(audit.compact_tool_history == true)
+    ))
+    table.insert(lines, string.format(
+      "- compact_tool_results: %s",
+      tostring(audit.compact_tool_results == true)
+    ))
+
+    if type(audit.tool_result_counts) == "table" then
+      local counts = {}
+      for name, count in pairs(audit.tool_result_counts) do
+        table.insert(counts, tostring(name) .. "=" .. tostring(count))
+      end
+      table.sort(counts)
+      if #counts > 0 then
+        table.insert(lines, "- tool_result_counts: " .. table.concat(counts, ", "))
+      end
+    end
+
+    local duplicate_delta = tonumber(totals.duplicate_tool_notices or 0) - previous_duplicates
+    if duplicate_delta > 0 then
+      table.insert(lines, string.format(
+        "- observation: %d repeated tool result notice(s) are present in this request.",
+        duplicate_delta
+      ))
+    end
+    previous_duplicates = tonumber(totals.duplicate_tool_notices or 0) or previous_duplicates
+
+    local current_tool_results = tonumber(totals.tool_results or 0) or 0
+    if index > 1 and current_tool_results > (previous_tool_results[index - 1] or 0) then
+      table.insert(lines, "- observation: tool result history grew before this request.")
+    end
+    previous_tool_results[index] = current_tool_results
+
+    local big = {}
+    for _, message in ipairs(audit.messages or {}) do
+      if tonumber(message.bytes or 0) >= 48000 then
+        table.insert(big, string.format(
+          "  - #%s %s %s bytes hash=%s preview=%s",
+          tostring(message.index or ""),
+          tostring(message.role or ""),
+          tostring(message.bytes or ""),
+          tostring(message.hash or ""),
+          tostring(message.preview or "")
+        ))
+      end
+    end
+    if #big > 0 then
+      table.insert(lines, "- large provider messages:")
+      for _, line in ipairs(big) do table.insert(lines, line) end
+    end
+
+    local calls = {}
+    for _, message in ipairs(audit.messages or {}) do
+      for _, call in ipairs(message.tool_calls or {}) do
+        table.insert(calls, string.format(
+          "  - message #%s: %s args=%s bytes hash=%s",
+          tostring(message.index or ""),
+          tostring(call.name or ""),
+          tostring(call.arguments_bytes or 0),
+          tostring(call.arguments_hash or "")
+        ))
+      end
+    end
+    if #calls > 0 then
+      table.insert(lines, "- provider tool calls included:")
+      for _, line in ipairs(calls) do table.insert(lines, line) end
+    end
+
+    table.insert(lines, "")
+  end
+  return table.concat(lines, "\n")
+end
+
+function write_diagnostic_artifacts(view)
+  if not (view and view.conversation) then return end
+  local raw = view.conversation:raw_responses_text()
+  local entries = decode_raw_entries(raw)
+  local request_blocks = {}
+  local tool_calls = {}
+  for _, entry in ipairs(entries) do
+    if entry.kind == "http-request" then
+      table.insert(request_blocks, jsonutil.encode(entry.data, { prettify = true }))
+    elseif entry.kind == "http-response" then
+      collect_tool_calls_from_payload(tool_calls, entry.kind, entry.data)
+    elseif entry.kind == "http-stream-event" and type(entry.data) == "string" and entry.data ~= "[DONE]" then
+      local ok, decoded = pcall(json.decode, entry.data)
+      if ok then collect_tool_calls_from_payload(tool_calls, entry.kind, decoded) end
+    end
+  end
+  write_file(OUT_DIR .. PATHSEP .. "requests-pretty.jsonl", table.concat(request_blocks, "\n\n") .. (#request_blocks > 0 and "\n" or ""))
+
+  local tool_lines = {}
+  local diagnostics = {}
+  local inspect_counts = {}
+  local since_mutation = {}
+  for _, call in ipairs(tool_calls) do
+    table.insert(tool_lines, jsonutil.encode(call, { prettify = true }))
+    if call.name == "write" or call.name == "edit" or call.name == "apply_patch" then
+      since_mutation = {}
+    else
+      local key = tool_loop_key(call)
+      if key then
+        inspect_counts[key] = (inspect_counts[key] or 0) + 1
+        since_mutation[key] = (since_mutation[key] or 0) + 1
+        if since_mutation[key] == 3 then
+          table.insert(diagnostics, string.format(
+            "Repeated inspection without intervening mutation: %s (%d total)",
+            key,
+            inspect_counts[key]
+          ))
+        end
+      end
+    end
+  end
+  write_file(OUT_DIR .. PATHSEP .. "tool-calls.jsonl", table.concat(tool_lines, "\n") .. (#tool_lines > 0 and "\n" or ""))
+  if #diagnostics == 0 then
+    table.insert(diagnostics, "No repeated inspection loop detected.")
+  end
+  write_file(OUT_DIR .. PATHSEP .. "loop-diagnostics.txt", table.concat(diagnostics, "\n") .. "\n")
+  write_file(OUT_DIR .. PATHSEP .. "request-analysis.md", request_audit_summary(entries))
 end
 
 local function preserve_larger_live_raw(raw)
@@ -507,14 +780,26 @@ local function analyze(view)
   local checks = {
     { "uses selected agent", view.agent and view.agent.name == AGENT },
     { "has assistant output", markdown:find("## Assistant", 1, true) ~= nil },
-    { "records activity", markdown:find("## Activity", 1, true) ~= nil },
-    { "mentions plan", lower:find("plan", 1, true) ~= nil },
-    { "mentions implementation", lower:find("implement", 1, true) ~= nil or lower:find("file", 1, true) ~= nil },
     { "has raw http request", raw:find('"kind":"http-request"', 1, true) ~= nil },
     { "has raw http response or stream", raw:find('"kind":"http-response"', 1, true) ~= nil or raw:find('"kind":"http-stream-event"', 1, true) ~= nil },
     { "assistant transcript matches raw", transcript_ok },
     { "no backend timeout", not has_backend_timeout(markdown) }
   }
+  if SINGLE_PROMPT and SINGLE_PROMPT ~= "" then
+    for _, expected in ipairs(EXPECTED_MENTIONS) do
+      local needle = tostring(expected or ""):lower()
+      if needle ~= "" then
+        table.insert(checks, {
+          "mentions " .. needle,
+          lower:find(needle, 1, true) ~= nil
+        })
+      end
+    end
+  else
+    table.insert(checks, { "records activity", markdown:find("## Activity", 1, true) ~= nil })
+    table.insert(checks, { "mentions plan", lower:find("plan", 1, true) ~= nil })
+    table.insert(checks, { "mentions implementation", lower:find("implement", 1, true) ~= nil or lower:find("file", 1, true) ~= nil })
+  end
   for _, relative_path in ipairs(REQUIRED_FILES) do
     local path = project_dir and (project_dir .. PATHSEP .. tostring(relative_path):gsub("/", PATHSEP))
     table.insert(checks, {
@@ -555,40 +840,61 @@ core.add_thread(function()
       core.quit(true, 0)
       return
     end
-    local model = MODEL_OVERRIDE or (AGENT == "llamacpp" and provider.model or reported_model)
+    local model
+    if not USE_CONFIG_MODEL then
+      model = MODEL_OVERRIDE or (AGENT == "llamacpp" and provider.model or reported_model)
+    end
 
-    project_dir = plugin_root() .. PATHSEP .. PROJECT_SUBDIR
-    wipe_dir(project_dir)
+    project_dir = external_project
+      and system.absolute_path(common.home_expand(PROJECT_DIR_OVERRIDE))
+      or (plugin_root() .. PATHSEP .. PROJECT_SUBDIR)
+    if not project_dir or project_dir == "" then fail("could not resolve live project directory") end
+    if not external_project then wipe_dir(project_dir) end
     core.set_project(project_dir)
     system.chdir(project_dir)
     close_all_views()
 
     require "plugins.assistant"
     config.plugins.assistant.agent = AGENT
-    config.plugins.assistant.model = model or provider.model
+    if not USE_CONFIG_MODEL then
+      config.plugins.assistant.model = model or provider.model
+    end
     config.plugins.assistant.stream = true
     config.plugins.assistant.log_raw_messages = true
     config.plugins.assistant.log_protocol = true
     config.plugins.assistant.verbose_tool_calling = true
+    if rawget(_G, "ASSISTANT_LIVE_HTTP_COMPACT_TOOL_HISTORY") ~= nil then
+      config.plugins.assistant.compact_tool_history = rawget(_G, "ASSISTANT_LIVE_HTTP_COMPACT_TOOL_HISTORY") == true
+    end
+    if rawget(_G, "ASSISTANT_LIVE_HTTP_COMPACT_TOOL_RESULTS") ~= nil then
+      config.plugins.assistant.compact_tool_results = rawget(_G, "ASSISTANT_LIVE_HTTP_COMPACT_TOOL_RESULTS") == true
+    end
 
     if not command.perform("assistant:new-conversation") then fail("assistant:new-conversation did not run") end
     view = wait_until("assistant prompt view", 10, find_prompt_view)
-    view.agent.model = model or provider.model
+    if not USE_CONFIG_MODEL then
+      view.agent.model = model or provider.model
+    end
     view:refresh()
 
-    view:set_collaboration_mode("plan")
-    submit_plan_prompt(view, PLAN_PROMPT)
-
     view:set_collaboration_mode("implementation")
-    submit_prompt(view, IMPLEMENT_PROMPT)
-    submit_until_required_files_exist(view)
+    if SINGLE_PROMPT and SINGLE_PROMPT ~= "" then
+      submit_prompt(view, SINGLE_PROMPT)
+    else
+      view:set_collaboration_mode("plan")
+      submit_plan_prompt(view, PLAN_PROMPT)
 
-    if #missing_required_files() == 0 and FOLLOWUP_PROMPT and FOLLOWUP_PROMPT ~= "" then
-      submit_prompt(view, FOLLOWUP_PROMPT)
+      view:set_collaboration_mode("implementation")
+      submit_prompt(view, IMPLEMENT_PROMPT)
+      submit_until_required_files_exist(view)
+
+      if #missing_required_files() == 0 and FOLLOWUP_PROMPT and FOLLOWUP_PROMPT ~= "" then
+        submit_prompt(view, FOLLOWUP_PROMPT)
+      end
     end
 
     analyze(view)
-    delete_all_conversations(project_dir)
+    if not PRESERVE_PROJECT_CONVERSATIONS then delete_all_conversations(project_dir) end
     log("artifacts written to %s", OUT_DIR)
   end, debug.traceback)
 
@@ -599,14 +905,15 @@ core.add_thread(function()
     if view and view.conversation then
       pcall(write_file, OUT_DIR .. PATHSEP .. "conversation.md", view.conversation:to_markdown())
       pcall(preserve_larger_live_raw, view.conversation:raw_responses_text())
+      pcall(write_diagnostic_artifacts, view)
     end
-    if project_dir then pcall(delete_all_conversations, project_dir) end
+    if project_dir and not PRESERVE_PROJECT_CONVERSATIONS then pcall(delete_all_conversations, project_dir) end
     core.error("Assistant %s live failed: %s", AGENT, err)
     print(err)
     core.quit(true, 1)
   else
     close_all_views()
-    if project_dir then delete_all_conversations(project_dir) end
+    if project_dir and not PRESERVE_PROJECT_CONVERSATIONS then delete_all_conversations(project_dir) end
     core.quit(true, 0)
   end
 end)

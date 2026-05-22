@@ -1,6 +1,8 @@
 local context = require "plugins.assistant.tool_context"
 local Tool = require "plugins.assistant.tool"
 local ImageView = require "core.imageview"
+local json = require "core.json"
+local common = require "core.common"
 
 ---Filesystem inspection and read-only project tools.
 ---@class assistant.tool.file
@@ -22,6 +24,62 @@ local function read_approval(key)
   return function(arguments)
     return context.read_path_requires_approval(arguments, key)
   end
+end
+
+---Return the latest user-visible prompt text for the active tool call.
+---@return string|nil text
+local function active_user_prompt()
+  local conversation = context.active_conversation()
+  if not (conversation and conversation.messages) then return nil end
+  for index = #conversation.messages, 1, -1 do
+    local message = conversation.messages[index]
+    if message
+      and message.role == "user"
+      and not (message.meta and message.meta.provider_only)
+      and type(message.message) == "string"
+      and message.message ~= ""
+    then
+      return message.message
+    end
+  end
+  return nil
+end
+
+---Return an exact replacement target from a natural-language user request.
+---@param prompt string|nil
+---@return string|nil target_text
+local function exact_replacement_target(prompt)
+  if type(prompt) ~= "string" then return nil end
+  local patterns = {
+    "[Ff]rom%s+`([^`]+)`%s+to%s+`([^`]+)`",
+    "[Ff]rom%s+([^%s]+)%s+to%s+([^%s]+)"
+  }
+  for _, pattern in ipairs(patterns) do
+    local old = prompt:match(pattern)
+    if old and old ~= "" then return old end
+  end
+  return nil
+end
+
+---Return whether a search query is too broad for an exact replacement target.
+---@param target_text string|nil Exact old value from the user prompt.
+---@param query string|nil Search query requested by the model.
+---@return boolean broad
+local function broad_exact_replacement_query(target_text, query)
+  if type(target_text) ~= "string" or type(query) ~= "string" then return false end
+  target_text = target_text:match("^%s*(.-)%s*$") or ""
+  query = query:match("^%s*(.-)%s*$") or ""
+  if target_text == "" or query == "" or query == target_text then return false end
+  if query:find(target_text, 1, true) then return false end
+  local lower_target = target_text:lower()
+  local lower_query = query:lower()
+  if lower_query:find(lower_target, 1, true) then return false end
+  if not lower_target:find(lower_query, 1, true) then return false end
+
+  local basename = target_text:match("[/\\]([^/\\]+)$")
+  if basename and lower_query == basename:lower() then return false end
+
+  return true
 end
 
 ---Return compact status suffix.
@@ -153,6 +211,508 @@ local function read_activity_markdown(call, status_value, result, activity_conte
     table.insert(lines, Tool.fenced(Tool.first_lines(text, 3), "text"))
   end
   return table.concat(lines, "\n")
+end
+
+---Return the provider tool call name.
+---@param call table|nil
+---@return string|nil
+local function provider_call_name(call)
+  local fn = type(call) == "table" and type(call["function"]) == "table" and call["function"] or nil
+  return fn and fn.name or type(call) == "table" and call.name or nil
+end
+
+---Return the provider tool call id.
+---@param call table|nil
+---@return string
+local function provider_call_id(call)
+  return tostring(type(call) == "table" and (call.id or call.call_id) or "")
+end
+
+---Decode provider tool call arguments.
+---@param call table|nil
+---@return table
+local function provider_call_arguments(call)
+  if type(call) ~= "table" then return {} end
+  local fn = type(call["function"]) == "table" and call["function"] or nil
+  local arguments = fn and fn.arguments or call.arguments
+  if type(arguments) == "table" then return arguments end
+  if type(arguments) ~= "string" then return {} end
+  local ok, decoded = pcall(json.decode, arguments)
+  return ok and type(decoded) == "table" and decoded or {}
+end
+
+---Strip provider result boilerplate from a historical tool result.
+---@param tool_name string
+---@param text string
+---@return string
+local function unwrap_provider_result(tool_name, text)
+  text = tostring(text or "")
+  local prefix = "Tool `" .. tostring(tool_name or "") .. "` result:\n"
+  if text:sub(1, #prefix) == prefix then
+    text = text:sub(#prefix + 1)
+  end
+  local suffix = "\n\nUse this result to answer the user."
+  local at = text:find(suffix, 1, true)
+  if at then text = text:sub(1, at - 1) end
+  return text
+end
+
+---Return whether a historical file inspection result was successful enough to summarize.
+---@param call table|nil
+---@param result_message table|string
+---@return boolean
+local function inspection_result_is_successful(call, result_message)
+  local name = provider_call_name(call)
+  if name ~= "read" and name ~= "search" and name ~= "list" and name ~= "file_info" then
+    return false
+  end
+  local content = type(result_message) == "table"
+    and (result_message.content or result_message.output)
+    or result_message
+  content = tostring(content or "")
+  if content:find("Tool `" .. name .. "` result:", 1, true) ~= 1 then return false end
+  local body = unwrap_provider_result(name, content)
+  local lower = body:lower()
+  return not (
+    lower:find("^tool error:", 1, false)
+    or lower:find("^user denied", 1, false)
+    or lower:find("^missing path", 1, false)
+    or lower:find("^path is outside", 1, false)
+    or lower:find("^not a directory:", 1, false)
+    or lower:find("^not found:", 1, false)
+    or lower:find("^repeated tool call skipped", 1, false)
+    or lower:find("^repeated tool call loop detected", 1, false)
+    or lower:find("^repeated tool call suppressed", 1, false)
+  )
+end
+
+---Return a project-relative path for compact history summaries.
+---@param value any
+---@param compact_context table|nil
+---@return string
+local function compact_path(value, compact_context)
+  value = tostring(value or "")
+  if value == "" then return "(unknown)" end
+  local project_dir = compact_context and compact_context.project_dir
+  local absolute = value
+  if project_dir and project_dir ~= "" and not common.is_absolute_path(value) then
+    absolute = project_dir .. PATHSEP .. value
+  end
+  absolute = common.normalize_path(absolute) or absolute
+  if project_dir and project_dir ~= "" then
+    project_dir = common.normalize_path(project_dir) or project_dir
+    if absolute == project_dir then return common.basename(project_dir) end
+    if common.path_belongs_to(absolute, project_dir) then
+      return common.relative_path(project_dir, absolute)
+    end
+  end
+  local relative = context.project_relative(absolute)
+  return relative ~= "" and relative or value
+end
+
+---Return up to max_lines lines from text.
+---@param text string
+---@param max_lines integer
+---@return string[]
+---@return integer count
+local function limited_lines(text, max_lines)
+  local lines = {}
+  local count = 0
+  for line in (tostring(text or "") .. "\n"):gmatch("(.-)\n") do
+    count = count + 1
+    if #lines < max_lines then table.insert(lines, line) end
+  end
+  return lines, count
+end
+
+---Return a concise read history line plus preview.
+---@param args table
+---@param result string
+---@param compact_context table|nil
+---@return string[]
+local function compact_read_history(args, result, compact_context)
+  local path = compact_path(args.path, compact_context)
+  local lines, total = limited_lines(result, 12)
+  local output = {
+    string.format(
+      "- read `%s`%s%s: %d bytes, hash %s",
+      path,
+      args.offset and (" from line " .. tostring(args.offset)) or "",
+      args.limit and (" limit " .. tostring(args.limit)) or "",
+      #result,
+      context.hash_text(result)
+    )
+  }
+  if #lines > 0 then
+    table.insert(output, "  preview:")
+    for _, line in ipairs(lines) do
+      table.insert(output, "    " .. line)
+    end
+    if total > #lines then
+      table.insert(output, "    ... truncated preview ...")
+    end
+  end
+  return output
+end
+
+---Return a concise search history line plus representative matches.
+---@param args table
+---@param result string
+---@param compact_context table|nil
+---@return string[]
+local function compact_search_history(args, result, compact_context)
+  local original_query, narrowed_query = result:match("^Search query `([^`]+)` was narrowed to the exact old value `([^`]+)`")
+  local summarized_result = result
+  if narrowed_query then
+    summarized_result = summarized_result:gsub("^.-\n", "", 1)
+  end
+  local matches, total = limited_lines(summarized_result, 8)
+  local files = {}
+  local seen = {}
+  for line in (summarized_result .. "\n"):gmatch("(.-)\n") do
+    local file = line:match("^(.-):%d+:")
+    if file and not seen[file] then
+      seen[file] = true
+      table.insert(files, compact_path(file, compact_context))
+    end
+    if #files >= 12 then break end
+  end
+  local output = {
+    narrowed_query
+      and string.format(
+        "- narrowed search in `%s` from `%s` to exact old value `%s` (%s): %d match line(s)",
+        compact_path(args.directory, compact_context),
+        tostring(original_query or args.text or ""),
+        tostring(narrowed_query),
+        tostring(args.search_type or "plain"),
+        summarized_result:find("^No results", 1, false) and 0 or total
+      )
+      or string.format(
+        "- searched `%s` for `%s` (%s): %d match line(s)",
+        compact_path(args.directory, compact_context),
+        tostring(args.text or ""),
+        tostring(args.search_type or "plain"),
+        result == "No results." and 0 or total
+      )
+  }
+  if #files > 0 then
+    table.insert(output, "  files: " .. table.concat(files, ", "))
+  end
+  if #matches > 0 and result ~= "No results." and not summarized_result:find("^No results", 1, false) then
+    table.insert(output, "  first matches:")
+    for _, line in ipairs(matches) do
+      local file, rest = line:match("^(.-)(:%d+:.*)$")
+      if file and rest then
+        line = compact_path(file, compact_context) .. rest
+      end
+      table.insert(output, "    " .. line)
+    end
+  end
+  return output
+end
+
+---Return a concise list history line plus representative entries.
+---@param args table
+---@param result string
+---@param compact_context table|nil
+---@return string[]
+local function compact_list_history(args, result, compact_context)
+  local entries, total = limited_lines(result, 20)
+  local output = {
+    string.format(
+      "- listed `%s`%s%s: %d entr%s",
+      compact_path(args.directory, compact_context),
+      args.recursive and " recursively" or "",
+      args.pattern and (" filtered by `" .. tostring(args.pattern) .. "`") or "",
+      result == "No files." and 0 or total,
+      total == 1 and "y" or "ies"
+    )
+  }
+  if #entries > 0 and result ~= "No files." then
+    table.insert(output, "  first entries:")
+    for _, line in ipairs(entries) do
+      table.insert(output, "    " .. compact_path(line, compact_context))
+    end
+  end
+  return output
+end
+
+---Return a concise file_info history line.
+---@param args table
+---@param result string
+---@param compact_context table|nil
+---@return string[]
+local function compact_file_info_history(args, result, compact_context)
+  local lines = { "- inspected metadata for `" .. compact_path(args.path, compact_context) .. "`:" }
+  for _, line in ipairs((limited_lines(result, 6))) do
+    table.insert(lines, "  " .. line)
+  end
+  return lines
+end
+
+---Return markdown language for file context snapshots.
+---@param path string|nil
+---@return string
+local function code_fence_language(path)
+  local name = tostring(path or ""):match("[^/\\]+$") or ""
+  local ext = name:match("%.([^%.]+)$")
+  if name == "Makefile" or name:match("^Makefile%.") then return "make" end
+  if ext == "c" or ext == "h" then return "c" end
+  if ext == "lua" then return "lua" end
+  if ext == "md" or ext == "markdown" then return "markdown" end
+  if ext == "json" then return "json" end
+  if ext == "yml" or ext == "yaml" then return "yaml" end
+  if ext == "sh" then return "sh" end
+  return ""
+end
+
+---Resolve a project file path for provider snapshots.
+---@param compact_context table|nil
+---@param path string|nil
+---@return string|nil absolute
+---@return string|nil relative
+local function project_file_path(compact_context, path)
+  path = tostring(path or "")
+  if path == "" then return nil end
+  local project_dir = compact_context and compact_context.project_dir
+  if not project_dir or project_dir == "" then return nil end
+  local root = common.normalize_path(project_dir) or project_dir
+  local absolute = path
+  if not common.is_absolute_path(absolute) then
+    absolute = root .. PATHSEP .. absolute
+  end
+  absolute = common.normalize_path(absolute) or absolute
+  if absolute ~= root and not common.path_belongs_to(absolute, root) then return nil end
+  return absolute, common.relative_path(root, absolute)
+end
+
+---Read current file text for a provider snapshot.
+---@param path string|nil
+---@return string|nil
+local function read_snapshot_file(path)
+  local info = path and system.get_file_info(path)
+  if not info or info.type ~= "file" then return nil end
+  if ImageView.is_supported(path) then return nil end
+  local text = context.read_file(path)
+  return type(text) == "string" and text or nil
+end
+
+---Build assistant messages for compacted read snapshots.
+---@param records table[]
+---@return table[]|nil messages
+local function build_read_snapshot_messages(records)
+  if #records == 0 then return nil end
+  local parts = {
+    "# Current File Context",
+    "",
+    "Historical read tool calls were omitted from provider history. The current file contents below are the available file context. Use this content for reasoning and edits; do not re-read these files unless the user asks for fresh data or an edit fails because the file changed."
+  }
+  for _, record in ipairs(records) do
+    table.insert(parts, "")
+    table.insert(parts, "Read File: " .. record.relative)
+    if record.content ~= nil then
+      table.insert(parts, "```" .. code_fence_language(record.relative))
+      table.insert(parts, record.content)
+      table.insert(parts, "```")
+    else
+      table.insert(parts, "Current file content could not be read as text.")
+    end
+  end
+  return {
+    {
+      role = "assistant",
+      content = table.concat(parts, "\n")
+    }
+  }
+end
+
+---Build assistant messages for compacted non-read inspections.
+---@param entries string[][]
+---@return table[]|nil messages
+local function build_inspection_summary_messages(entries)
+  if #entries == 0 then return nil end
+  local lines = {
+    "# Completed File Inspections",
+    "",
+    "Historical search/list/metadata tool calls were omitted from provider history. These inspections already completed."
+  }
+  for _, entry in ipairs(entries) do
+    table.insert(lines, "")
+    for _, line in ipairs(entry) do table.insert(lines, line) end
+  end
+  return {
+    {
+      role = "assistant",
+      content = table.concat(lines, "\n")
+    }
+  }
+end
+
+---Return whether a historical file mutation result was successful.
+---@param call table|nil
+---@param result_message table|string
+---@return boolean
+local function mutation_result_is_successful(call, result_message)
+  local name = provider_call_name(call)
+  if name ~= "write" and name ~= "edit" then return false end
+  local content = type(result_message) == "table"
+    and (result_message.content or result_message.output)
+    or result_message
+  content = tostring(content or "")
+  if content:find("Tool `" .. name .. "` result:", 1, true) ~= 1 then return false end
+  local body = unwrap_provider_result(name, content)
+  local lower = body:lower()
+  if lower:find("^tool error:", 1, false)
+    or lower:find("^user denied", 1, false)
+    or lower:find("^refusing ", 1, false)
+    or lower:find("^could not ", 1, false)
+  then
+    return false
+  end
+  if name == "edit" then
+    return body:find("^Successfully replaced %d+ block%(s%)", 1, false) ~= nil
+  end
+  return body:find("^created:", 1, false) ~= nil or body:find("^replaced:", 1, false) ~= nil
+end
+
+---Return a mutation label from the provider call and result.
+---@param name string
+---@param result string
+---@return string
+local function mutation_label(name, result)
+  result = tostring(result or "")
+  if name == "write" then
+    if result:find("^created:", 1, false) then return "Added File" end
+    return "Written File"
+  end
+  return "Edited File"
+end
+
+---Build assistant messages for compacted historical file mutations.
+---@param records table[]
+---@return table[]|nil messages
+local function build_mutation_snapshot_messages(records)
+  if #records == 0 then return nil end
+  local parts = {
+    "# Already Applied Changes",
+    "",
+    "Historical file edit/write tool calls were omitted from provider history; these file operations already happened.",
+    "Use the current file content below instead of historical edit arguments or oldText values. Files listed below already exist. Do not recreate them; read them first and use edit for targeted changes only if they still need changes."
+  }
+  for _, record in ipairs(records) do
+    table.insert(parts, "")
+    table.insert(parts, record.label .. ": " .. record.relative)
+    if record.content ~= nil then
+      table.insert(parts, "```" .. code_fence_language(record.relative))
+      table.insert(parts, record.content)
+      table.insert(parts, "```")
+    else
+      table.insert(parts, "Current file content is already included in the current file context or could not be read as text.")
+    end
+  end
+  return {
+    {
+      role = "assistant",
+      content = table.concat(parts, "\n")
+    }
+  }
+end
+
+---Compact historical file mutation calls into current file snapshots.
+---@param message table
+---@param compact_context table|nil
+---@param included_ids table<string, boolean>|nil
+---@param result_texts table<string, string>|nil
+---@return table[]|nil messages
+local function compact_mutation_history(message, compact_context, included_ids, result_texts)
+  if type(message) ~= "table" or type(message.tool_calls) ~= "table" then return nil end
+  compact_context = compact_context or {}
+  compact_context.file_read_snapshots = compact_context.file_read_snapshots or {}
+  compact_context.file_mutation_snapshots = compact_context.file_mutation_snapshots or {}
+  local records = {}
+  for _, call in ipairs(message.tool_calls) do
+    local id = provider_call_id(call)
+    local name = provider_call_name(call)
+    if id ~= "" and included_ids and included_ids[id] and (name == "write" or name == "edit")
+      and mutation_result_is_successful(call, { content = result_texts and result_texts[id] or "" })
+    then
+      local args = provider_call_arguments(call)
+      local absolute, relative = project_file_path(compact_context, args.path)
+      if relative and not compact_context.file_mutation_snapshots[relative] then
+        compact_context.file_mutation_snapshots[relative] = true
+        local content = read_snapshot_file(absolute)
+        compact_context.file_read_snapshots[relative] = true
+        table.insert(records, {
+          relative = relative,
+          label = mutation_label(name, unwrap_provider_result(name, result_texts and result_texts[id] or "")),
+          content = content
+        })
+      end
+    end
+  end
+  return build_mutation_snapshot_messages(records)
+end
+
+---Compact historical file inspection calls into assistant-readable summaries.
+---@param message table
+---@param _ table|nil
+---@param included_ids table<string, boolean>|nil
+---@param result_texts table<string, string>|nil
+---@return table[]|nil messages
+local function compact_inspection_history(message, compact_context, included_ids, result_texts)
+  if type(message) ~= "table" or type(message.tool_calls) ~= "table" then return nil end
+  compact_context = compact_context or {}
+  compact_context.file_read_snapshots = compact_context.file_read_snapshots or {}
+  compact_context.file_inspection_summaries = compact_context.file_inspection_summaries or {}
+  local read_records = {}
+  local summary_entries = {}
+  for _, call in ipairs(message.tool_calls) do
+    local id = provider_call_id(call)
+    local name = provider_call_name(call)
+    if id ~= "" and included_ids and included_ids[id]
+      and (name == "read" or name == "search" or name == "list" or name == "file_info")
+      and inspection_result_is_successful(call, { content = result_texts and result_texts[id] or "" })
+    then
+      local args = provider_call_arguments(call)
+      local result = unwrap_provider_result(name, result_texts and result_texts[id] or "")
+      if name == "read" then
+        local absolute, relative = project_file_path(compact_context, args.path)
+        if relative and not compact_context.file_read_snapshots[relative] then
+          compact_context.file_read_snapshots[relative] = true
+          table.insert(read_records, {
+            relative = relative,
+            content = read_snapshot_file(absolute)
+          })
+        end
+      elseif name == "search" then
+        local key = name .. "\0" .. tostring(args.directory or "") .. "\0" .. tostring(args.text or "") .. "\0" .. tostring(args.search_type or "")
+        if not compact_context.file_inspection_summaries[key] then
+          compact_context.file_inspection_summaries[key] = true
+          table.insert(summary_entries, compact_search_history(args, result, compact_context))
+        end
+      elseif name == "list" then
+        local key = name .. "\0" .. tostring(args.directory or "") .. "\0" .. tostring(args.recursive or "") .. "\0" .. tostring(args.pattern or "")
+        if not compact_context.file_inspection_summaries[key] then
+          compact_context.file_inspection_summaries[key] = true
+          table.insert(summary_entries, compact_list_history(args, result, compact_context))
+        end
+      elseif name == "file_info" then
+        local key = name .. "\0" .. tostring(args.path or "")
+        if not compact_context.file_inspection_summaries[key] then
+          compact_context.file_inspection_summaries[key] = true
+          table.insert(summary_entries, compact_file_info_history(args, result, compact_context))
+        end
+      end
+    end
+  end
+  local messages = {}
+  for _, snapshot in ipairs(build_read_snapshot_messages(read_records) or {}) do
+    table.insert(messages, snapshot)
+  end
+  for _, summary in ipairs(build_inspection_summary_messages(summary_entries) or {}) do
+    table.insert(messages, summary)
+  end
+  return #messages > 0 and messages or nil
 end
 
 local READ_MAX_LINES = 2000
@@ -542,10 +1102,31 @@ function filetools.search(directory, text, search_type)
   local info = system.get_file_info(path)
   if not info or info.type ~= "dir" then return "not a directory: " .. path end
   search_type = search_type or "plain"
+  local narrowed_note
+  if search_type == "plain" then
+    local replacement_target = exact_replacement_target(active_user_prompt())
+    if broad_exact_replacement_query(replacement_target, text) then
+      narrowed_note = string.format(
+        "Search query `%s` was narrowed to the exact old value `%s` from the user's replacement request.",
+        tostring(text),
+        tostring(replacement_target)
+      )
+      text = replacement_target
+    end
+  end
   local results = {}
   scan_dir(path, text or "", search_type, results)
-  if #results == 0 then return "No results." end
-  return table.concat(results, "\n")
+  if #results == 0 then
+    if narrowed_note then
+      return narrowed_note .. "\nNo results for the exact old value."
+    end
+    return "No results."
+  end
+  local output = table.concat(results, "\n")
+  if narrowed_note then
+    output = narrowed_note .. "\n" .. output
+  end
+  return output
 end
 
 ---List files and directories in a project directory.
@@ -777,6 +1358,8 @@ filetools.tools = {
       local path = call and call.arguments and call.arguments.path
       return context.compact_provider_text_result(result_text(result), "file read: " .. tostring(path or ""))
     end,
+    result_is_successful = inspection_result_is_successful,
+    compact_history = compact_inspection_history,
     activity_label = function() return "Inspecting project" end,
     activity_markdown = read_activity_markdown,
     compact_activity_markdown = compact_file_activity("Reading"),
@@ -793,9 +1376,11 @@ filetools.tools = {
     name = "search",
     callback = filetools.search,
     compact_result = compact("search result"),
+    result_is_successful = inspection_result_is_successful,
+    compact_history = compact_inspection_history,
     activity_label = function() return "Inspecting project" end,
     compact_activity_markdown = compact_file_activity("Inspecting project"),
-    description = "Search for text in a project directory.",
+    description = "Search for text in a project directory. For exact replacement tasks, search the complete old value from the user first and do not broaden to substrings unless explicitly asked.",
     read_only = true,
     requires_approval = read_approval("directory"),
     params = {
@@ -808,6 +1393,8 @@ filetools.tools = {
     name = "list",
     callback = filetools.list,
     compact_result = compact("file listing"),
+    result_is_successful = inspection_result_is_successful,
+    compact_history = compact_inspection_history,
     activity_label = function() return "Inspecting project" end,
     compact_activity_markdown = compact_file_activity("Inspecting project"),
     description = "List files and directories inside a project directory.",
@@ -823,6 +1410,8 @@ filetools.tools = {
   Tool:new({
     name = "file_info",
     callback = filetools.file_info,
+    result_is_successful = inspection_result_is_successful,
+    compact_history = compact_inspection_history,
     activity_label = function() return "Inspecting project" end,
     compact_activity_markdown = compact_file_activity("Inspecting project"),
     description = "Get project file metadata and content hash.",
@@ -835,6 +1424,8 @@ filetools.tools = {
   Tool:new({
     name = "write",
     callback = filetools.write_file,
+    result_is_successful = mutation_result_is_successful,
+    compact_history = compact_mutation_history,
     activity_label = function() return "Editing files" end,
     compact_activity_markdown = compact_write_activity,
     description = "Write content to a file. Creates the file if it doesn't exist, overwrites if it does. Automatically creates parent directories.",
@@ -846,6 +1437,8 @@ filetools.tools = {
   Tool:new({
     name = "edit",
     callback = filetools.edit,
+    result_is_successful = mutation_result_is_successful,
+    compact_history = compact_mutation_history,
     activity_label = function() return "Editing files" end,
     compact_activity_markdown = compact_edit_activity,
     description = "Edit a single file using exact text replacement. Every edits[].oldText must match a unique, non-overlapping region of the original file. If two changes affect the same block or nearby lines, merge them into one edit instead of emitting overlapping edits. Do not include large unchanged regions just to connect distant changes.",

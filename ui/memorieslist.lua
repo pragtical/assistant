@@ -411,6 +411,47 @@ function MemoriesList:refresh()
   core.redraw = true
 end
 
+---Remove a memory from the visible list without reading memories again.
+---@param id string
+---@return boolean removed
+function MemoriesList:remove_memory_row(id)
+  id = tostring(id or "")
+  if id == "" then return false end
+  local filter = self.textbox:get_text()
+  local source = #self.list.row_data_original > 0
+    and self.list.row_data_original
+    or self.list.row_data
+  local items = {}
+  local removed = false
+  for _, item in ipairs(source) do
+    if item and item.id == id then
+      removed = true
+    elseif item then
+      table.insert(items, item)
+    end
+  end
+  if not removed then return false end
+  self.list:filter(nil)
+  self.list:clear()
+  self.list.rows_original = {}
+  self.list.row_data_original = {}
+  self.list.rows_idx_original = {}
+  for _, item in ipairs(items) do
+    self:add_memory(item)
+  end
+  if filter and filter ~= "" then
+    self.list:filter(filter)
+  end
+  if #self.list.rows > 0 then
+    self.list:set_selected(math.min(self.list:get_selected() or 1, #self.list.rows))
+  else
+    self.list:set_selected(0)
+  end
+  self.list:resize_to_parent()
+  core.redraw = true
+  return true
+end
+
 ---Open selected memory.
 function MemoriesList:open_selected()
   local data = self:get_selected_data()
@@ -460,14 +501,15 @@ function MemoriesList:confirm_delete_selected()
     },
     function(_, button_id)
       if button_id == 1 then
-        local function refresh_after_delete()
-          self:refresh()
+        local function remove_after_delete(deleted)
+          if deleted ~= false then
+            self:remove_memory_row(data.id)
+          end
         end
         if self.on_delete then
-          self.on_delete(data, self.project_dir, refresh_after_delete)
+          self.on_delete(data, self.project_dir, remove_after_delete)
         else
-          Conversation.delete_memory(self.project_dir, data.id)
-          refresh_after_delete()
+          remove_after_delete(Conversation.delete_memory(self.project_dir, data.id))
         end
       end
     end,

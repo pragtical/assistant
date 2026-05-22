@@ -43,12 +43,13 @@ config.plugins.assistant = common.merge({
   verbose_activity = false,
   reasoning_activity_messages = true,
   raw_markdown_line_wrapping = true,
-  compact_tool_results = true,
-  compact_tool_history = true,
+  compact_tool_results = false,
+  compact_tool_history = false,
   generate_conversation_titles = true,
   stream = true,
   request_timeout_ms = 1800000,
   max_tool_call_rounds = 0,
+  max_repeated_tool_calls = 4,
   send_max_tokens = false,
   send_max_tokens_amount = 65536,
   reasoning_effort = "low",
@@ -202,6 +203,15 @@ config.plugins.assistant = common.merge({
       max = 512
     },
     {
+      label = "Max Repeated Tool Calls",
+      description = "Maximum identical tool calls allowed in one assistant turn before stopping the turn as a loop.",
+      path = "max_repeated_tool_calls",
+      type = "number",
+      default = 4,
+      min = 1,
+      max = 64
+    },
+    {
       label = "Send Max Tokens",
       description = "Send a max_tokens limit with OpenAI-compatible chat requests. Disabled by default so providers use their own output limits.",
       path = "send_max_tokens",
@@ -218,17 +228,17 @@ config.plugins.assistant = common.merge({
     },
     {
       label = "Compact Tool Results",
-      description = "Compact tool results before sending them back to HTTP/OpenAI-compatible models.",
+      description = "Compact tool results before sending them back to HTTP/OpenAI-compatible models - experimental.",
       path = "compact_tool_results",
       type = "toggle",
-      default = true
+      default = false
     },
     {
       label = "Compact Tool History",
-      description = "Compact historical tool call/result messages before provider requests.",
+      description = "Compact historical tool call/result messages before provider requests - experimental.",
       path = "compact_tool_history",
       type = "toggle",
-      default = true
+      default = false
     },
     {
       label = "Reasoning Effort",
@@ -368,6 +378,34 @@ function assistant.get_agent(name)
   return assistant.agents[name or config.plugins.assistant.agent]
 end
 
+---Return registered assistant agents for UI selection.
+---@return table[] agents Agent choices with `name`, `label`, and `default` fields.
+function assistant.list_agents()
+  local configured_name = config.plugins.assistant.agent
+  local choices = {}
+  for name, cls in pairs(assistant.agents) do
+    local label = name
+    if type(cls) == "table" and type(cls.display_name) == "string" then
+      label = cls.display_name
+    elseif type(cls) == "function" or type(cls) == "table" then
+      local ok, agent = pcall(function() return cls() end)
+      if ok and type(agent) == "table" and type(agent.display_name) == "string" then
+        label = agent.display_name
+      end
+    end
+    table.insert(choices, {
+      name = name,
+      label = label,
+      default = name == configured_name
+    })
+  end
+  table.sort(choices, function(a, b)
+    if a.default ~= b.default then return a.default end
+    return tostring(a.label):lower() < tostring(b.label):lower()
+  end)
+  return choices
+end
+
 ---Register a communication backend class.
 ---@param name string
 ---@param backend assistant.BackendClass
@@ -457,6 +495,53 @@ function assistant.start_conversation(agent_name)
   local agent = configured_agent(agent_name)
   local backend = configured_backend(agent.backend)
   return open_prompt_view(PromptView({ agent = agent, backend = backend }))
+end
+
+---Open a new assistant conversation after selecting an agent.
+---@return assistant.PromptView?
+function assistant.select_agent_new_conversation()
+  local choices = assistant.list_agents()
+  if #choices == 0 then
+    core.error("Assistant: no agents are registered")
+    return
+  end
+  if #choices == 1 then
+    return assistant.start_conversation(choices[1].name)
+  end
+
+  local suggestions = {}
+  local by_text = {}
+  for _, choice in ipairs(choices) do
+    local item = {
+      text = choice.label,
+      name = choice.name,
+      info = choice.default and "Default agent" or choice.name
+    }
+    table.insert(suggestions, item)
+    by_text[choice.name] = item
+    by_text[choice.label] = item
+  end
+
+  local function matching_suggestion(text, suggestion)
+    return suggestion or by_text[tostring(text or "")]
+  end
+
+  core.command_view:enter("Assistant Agent", {
+    show_suggestions = true,
+    typeahead = true,
+    suggest = function()
+      return suggestions
+    end,
+    validate = function(text, suggestion)
+      return matching_suggestion(text, suggestion) ~= nil
+    end,
+    submit = function(text, suggestion)
+      local item = matching_suggestion(text, suggestion)
+      if item then
+        assistant.start_conversation(item.name)
+      end
+    end
+  })
 end
 
 ---Open a saved assistant conversation.
@@ -617,6 +702,10 @@ assistant.register_backend("acp", AcpBackend)
 command.add(nil, {
   ["assistant:new-conversation"] = function()
     assistant.start_conversation()
+  end,
+
+  ["assistant:select-agent-new-conversation"] = function()
+    assistant.select_agent_new_conversation()
   end,
 
   ["assistant:list-conversations"] = function()

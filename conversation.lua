@@ -1,7 +1,6 @@
 local core = require "core"
 local common = require "core.common"
 local config = require "core.config"
-local json = require "core.json"
 local jsonutil = require "plugins.assistant.jsonutil"
 local permission = require "plugins.assistant.permission"
 local Tool = require "plugins.assistant.tool"
@@ -94,6 +93,36 @@ local function write_file(path, text)
   fp:close()
   yield_ui()
   return true
+end
+
+---Load a Lua file that returns a table.
+---@param path string
+---@return table|nil value
+local function load_table(path)
+  if not system.get_file_info(path) then return nil end
+  local chunk, err = loadfile(path, "t", {})
+  if not chunk then
+    core.error("Assistant: could not load %s: %s", path, err)
+    return nil
+  end
+  local ok, value = pcall(chunk)
+  if not ok then
+    core.error("Assistant: could not read %s: %s", path, value)
+    return nil
+  end
+  if type(value) ~= "table" then return nil end
+  return value
+end
+
+---Write a Lua file that returns a serialized table.
+---@param path string
+---@param value table
+---@return boolean
+local function write_table(path, value)
+  return write_file(path, "return " .. common.serialize(value, {
+    pretty = true,
+    sort = true
+  }))
 end
 
 ---Handle sanitize id.
@@ -351,7 +380,7 @@ end
 ---@param id string
 ---@return string
 function Conversation.session_path(project_dir, id)
-  return Conversation.sessions_dir(project_dir) .. PATHSEP .. assert(sanitize_id(id), "invalid session id") .. ".json"
+  return Conversation.sessions_dir(project_dir) .. PATHSEP .. assert(sanitize_id(id), "invalid session id") .. ".lua"
 end
 
 ---Handle raw responses path.
@@ -375,7 +404,7 @@ end
 ---@param id string
 ---@return string
 function Conversation.memory_path(project_dir, id)
-  return Conversation.memories_dir(project_dir) .. PATHSEP .. assert(sanitize_id(id), "invalid memory id") .. ".json"
+  return Conversation.memories_dir(project_dir) .. PATHSEP .. assert(sanitize_id(id), "invalid memory id") .. ".lua"
 end
 
 ---Read project instructions.
@@ -392,9 +421,8 @@ function Conversation.list_memories(project_dir)
   local dir = Conversation.memories_dir(project_dir)
   local result = {}
   for _, filename in ipairs(system.list_dir(dir) or {}) do
-    if filename:match("%.json$") then
-      local data = read_file(dir .. PATHSEP .. filename)
-      local decoded = data and json.decode(data)
+    if filename:match("%.lua$") then
+      local decoded = load_table(dir .. PATHSEP .. filename)
       if type(decoded) == "table" then
         table.insert(result, decoded)
       end
@@ -421,7 +449,7 @@ function Conversation.add_memory(project_dir, title, content)
     created_at = now(),
     updated_at = now()
   }
-  local ok = write_file(Conversation.memory_path(project_dir, item.id), jsonutil.encode(item))
+  local ok = write_table(Conversation.memory_path(project_dir, item.id), item)
   return ok and item or nil
 end
 
@@ -436,16 +464,14 @@ function Conversation.update_memory(project_dir, id, title, content)
   id = sanitize_id(id)
   if not id then return nil end
   local path = Conversation.memory_path(project_dir, id)
-  local data = read_file(path)
-  if not data then return nil end
-  local decoded = json.decode(data)
+  local decoded = load_table(path)
   if type(decoded) ~= "table" then return nil end
   decoded.id = id
   decoded.title = title or decoded.title or "Memory"
   decoded.content = content or decoded.content or ""
   decoded.created_at = decoded.created_at or now()
   decoded.updated_at = now()
-  local ok = write_file(path, jsonutil.encode(decoded))
+  local ok = write_table(path, decoded)
   return ok and decoded or nil
 end
 
@@ -1028,7 +1054,7 @@ function Conversation:save()
   if not self.project_dir then return false end
   if not mkdirp(Conversation.sessions_dir(self.project_dir)) then return false end
   local path = Conversation.session_path(self.project_dir, self.id)
-  return write_file(path, jsonutil.encode(self:to_state()))
+  return write_table(path, self:to_state())
 end
 
 ---Append raw response.
@@ -1091,9 +1117,7 @@ end
 ---@return assistant.Conversation|nil
 function Conversation.load(id, project_dir)
   local path = Conversation.session_path(project_dir, id)
-  local data = read_file(path)
-  if not data then return nil end
-  local decoded = json.decode(data)
+  local decoded = load_table(path)
   if type(decoded) ~= "table" then return nil end
   decoded.project_dir = decoded.project_dir or project_dir
   return Conversation.from_state(decoded)
@@ -1106,9 +1130,8 @@ function Conversation.list(project_dir)
   local dir = Conversation.sessions_dir(project_dir)
   local result = {}
   for _, filename in ipairs(system.list_dir(dir) or {}) do
-    if filename:match("%.json$") then
-      local data = read_file(dir .. PATHSEP .. filename)
-      local decoded = data and json.decode(data)
+    if filename:match("%.lua$") then
+      local decoded = load_table(dir .. PATHSEP .. filename)
       if type(decoded) == "table" then
         table.insert(result, decoded)
       end

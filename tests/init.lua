@@ -2,6 +2,7 @@ local test = require "core.test"
 dofile("tests/helper.inc")
 local common = require "core.common"
 local command = require "core.command"
+local config = require "core.config"
 local core = require "core"
 local keymap = require "core.keymap"
 local Conversation = require "plugins.assistant.conversation"
@@ -31,6 +32,9 @@ test.describe("assistant plugin init", function()
   local old_open_file
   local old_find_file
   local old_core_error
+  local old_command_view_enter
+  local old_agent_config
+  local old_start_conversation
 
   test.before_each(function()
     old_projects = core.projects
@@ -38,8 +42,12 @@ test.describe("assistant plugin init", function()
     old_open_file = command.map["core:open-file"]
     old_find_file = command.map["core:find-file"]
     old_core_error = core.error
+    old_command_view_enter = core.command_view.enter
+    old_agent_config = config.plugins.assistant.agent
+    old_start_conversation = assistant.start_conversation
     assistant.unregister_tool("external_test_tool")
     assistant.unregister_tool("external_invalid_tool")
+    assistant.unregister_agent("external_agent")
     common.rm(root, true)
     mkdirp(root .. PATHSEP .. "src")
     core.projects = {
@@ -60,10 +68,14 @@ test.describe("assistant plugin init", function()
     core.projects = old_projects
     core.set_active_view(old_active_view)
     core.error = old_core_error
+    core.command_view.enter = old_command_view_enter
+    config.plugins.assistant.agent = old_agent_config
+    assistant.start_conversation = old_start_conversation
     command.map["core:open-file"] = old_open_file
     command.map["core:find-file"] = old_find_file
     assistant.unregister_tool("external_test_tool")
     assistant.unregister_tool("external_invalid_tool")
+    assistant.unregister_agent("external_agent")
     common.rm(root, true)
   end)
 
@@ -87,6 +99,85 @@ test.describe("assistant plugin init", function()
     test.not_nil(view)
     test.equal(view.focused_child, view.prompt)
     test.equal(core.active_view, view.prompt)
+  end)
+
+  test.it("lists registered agents with configured default first", function()
+    config.plugins.assistant.agent = "openai"
+    assistant.register_agent("external_agent", function()
+      return Ollama({ name = "external_agent", display_name = "External Agent" })
+    end)
+
+    local choices = assistant.list_agents()
+    test.equal(#choices >= 8, true)
+    test.equal(choices[1].name, "openai")
+    test.equal(choices[1].default, true)
+
+    local found_external = false
+    for _, choice in ipairs(choices) do
+      if choice.name == "external_agent" then
+        found_external = choice.label == "External Agent"
+        break
+      end
+    end
+    test.equal(found_external, true)
+  end)
+
+  test.it("keeps new conversation command on configured default agent", function()
+    config.plugins.assistant.agent = "ollama"
+    local started_agent
+    local old_start = assistant.start_conversation
+    assistant.start_conversation = function(agent_name)
+      started_agent = agent_name or config.plugins.assistant.agent
+      return true
+    end
+
+    command.perform("assistant:new-conversation")
+
+    assistant.start_conversation = old_start
+    test.equal(started_agent, "ollama")
+  end)
+
+  test.it("opens agent picker for optional new conversation selection", function()
+    local entered_label
+    local entered_options
+    core.command_view.enter = function(_, label, options)
+      entered_label = label
+      entered_options = options
+    end
+
+    command.perform("assistant:select-agent-new-conversation")
+
+    test.equal(entered_label, "Assistant Agent")
+    test.not_nil(entered_options)
+    local suggestions = entered_options.suggest("")
+    test.equal(#suggestions >= 2, true)
+    test.equal(entered_options.validate("ollama"), true)
+    test.equal(entered_options.validate("missing-agent"), false)
+  end)
+
+  test.it("starts selected agent from optional new conversation picker", function()
+    local started_agent
+    local old_start = assistant.start_conversation
+    assistant.start_conversation = function(agent_name)
+      started_agent = agent_name
+      return true
+    end
+    core.command_view.enter = function(_, _, options)
+      local suggestions = options.suggest("")
+      local selected
+      for _, suggestion in ipairs(suggestions) do
+        if suggestion.name == "openai" then
+          selected = suggestion
+          break
+        end
+      end
+      options.submit(selected.text, selected)
+    end
+
+    command.perform("assistant:select-agent-new-conversation")
+
+    assistant.start_conversation = old_start
+    test.equal(started_agent, "openai")
   end)
 
   test.it("registers external tools for new assistant agents", function()
