@@ -4,7 +4,7 @@
       "id": "assistant",
       "name": "Assistant",
       "description": "AI-assisted coding with provider adapters, project context, guarded tools, and editor-native chat UI.",
-      "version": "0.1.0",
+      "version": "0.1.1",
       "mod_version": "3.10.1",
       "tags": [
         "ai",
