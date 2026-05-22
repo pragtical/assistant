@@ -263,6 +263,9 @@ function agent_config.get_agent_spec(agent_name)
       for _, field in ipairs(spec.fields) do
         local option = clone(field)
         option.path = agent_name .. "." .. field.path
+        if option.default == "" then
+          option.default = nil
+        end
         table.insert(options, option)
       end
       return {
