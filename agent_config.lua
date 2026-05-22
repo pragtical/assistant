@@ -16,6 +16,14 @@ local config = require "core.config"
 
 local agent_config = {}
 
+local REASONING_EFFORT_VALUES = {
+  { "Default", "" },
+  { "None", "none" },
+  { "Low", "low" },
+  { "Medium", "medium" },
+  { "High", "high" }
+}
+
 local DEFAULTS = {
   ollama = {
     model = "llama3.1",
@@ -49,6 +57,81 @@ local DEFAULTS = {
   copilot = {
     model = "",
     command = "copilot"
+  }
+}
+
+local AGENT_SPECS = {
+  {
+    key = "ollama",
+    name = "Ollama",
+    fields = {
+      { label = "Model", path = "model", type = "string", default = DEFAULTS.ollama.model },
+      { label = "Base URL", path = "base_url", type = "string", default = DEFAULTS.ollama.base_url },
+      { label = "Keep Alive", path = "keep_alive", type = "string", default = DEFAULTS.ollama.keep_alive },
+      { label = "Reasoning Effort", path = "reasoning_effort", type = "selection", default = "", values = REASONING_EFFORT_VALUES }
+    }
+  },
+  {
+    key = "llamacpp",
+    name = "llama.cpp",
+    fields = {
+      { label = "Model", path = "model", type = "string", default = DEFAULTS.llamacpp.model },
+      { label = "Base URL", path = "base_url", type = "string", default = DEFAULTS.llamacpp.base_url },
+      { label = "Reasoning Effort", path = "reasoning_effort", type = "selection", default = "", values = REASONING_EFFORT_VALUES }
+    }
+  },
+  {
+    key = "lms",
+    name = "LM Studio",
+    fields = {
+      { label = "Model", path = "model", type = "string", default = DEFAULTS.lms.model },
+      { label = "Base URL", path = "base_url", type = "string", default = DEFAULTS.lms.base_url },
+      { label = "Reasoning Effort", path = "reasoning_effort", type = "selection", default = "", values = REASONING_EFFORT_VALUES }
+    }
+  },
+  {
+    key = "openai",
+    name = "OpenAI",
+    fields = {
+      { label = "Model", path = "model", type = "string", default = DEFAULTS.openai.model },
+      { label = "Base URL", path = "base_url", type = "string", default = DEFAULTS.openai.base_url },
+      { label = "API Key Environment", path = "api_key_env", type = "string", default = DEFAULTS.openai.api_key_env },
+      { label = "API Key", path = "api_key", type = "string", default = "" },
+      { label = "Reasoning Effort", path = "reasoning_effort", type = "selection", default = "", values = REASONING_EFFORT_VALUES }
+    }
+  },
+  {
+    key = "codex",
+    name = "Codex",
+    fields = {
+      { label = "Model", path = "model", type = "string", default = DEFAULTS.codex.model },
+      { label = "Command", path = "command", type = "string", default = DEFAULTS.codex.command },
+      { label = "Reasoning Effort", path = "reasoning_effort", type = "selection", default = "", values = REASONING_EFFORT_VALUES }
+    }
+  },
+  {
+    key = "acp",
+    name = "ACP",
+    fields = {
+      { label = "Model", path = "model", type = "string", default = DEFAULTS.acp.model },
+      { label = "Command", path = "command", type = "list_strings", default = DEFAULTS.acp.command },
+      { label = "Transport", path = "transport", type = "selection", default = DEFAULTS.acp.transport, values = {
+        { "stdio", "stdio" },
+        { "tcp", "tcp" }
+      } },
+      { label = "Host", path = "host", type = "string", default = DEFAULTS.acp.host },
+      { label = "Port", path = "port", type = "number", default = DEFAULTS.acp.port, min = 0, max = 65535 },
+      { label = "Reasoning Effort", path = "reasoning_effort", type = "selection", default = "", values = REASONING_EFFORT_VALUES }
+    }
+  },
+  {
+    key = "copilot",
+    name = "GitHub Copilot",
+    fields = {
+      { label = "Model", path = "model", type = "string", default = DEFAULTS.copilot.model },
+      { label = "Command", path = "command", type = "string", default = DEFAULTS.copilot.command },
+      { label = "Reasoning Effort", path = "reasoning_effort", type = "selection", default = "", values = REASONING_EFFORT_VALUES }
+    }
   }
 }
 
@@ -91,6 +174,29 @@ end
 ---@return table<string, assistant.agent.config>
 function agent_config.defaults()
   return clone(DEFAULTS)
+end
+
+---Return a generated settings spec for built-in assistant agents.
+---@return settings.config_spec spec
+function agent_config.config_spec()
+  local sections = {}
+  for _, spec in ipairs(AGENT_SPECS) do
+    local options = {}
+    for _, field in ipairs(spec.fields) do
+      local option = clone(field)
+      option.path = spec.key .. "." .. field.path
+      table.insert(options, option)
+    end
+    table.insert(sections, {
+      name = spec.name,
+      options = options
+    })
+  end
+  return {
+    name = "Assistant Agent Settings",
+    path_prefix = "agents",
+    sections = sections
+  }
 end
 
 ---Merge options into the configured table for an agent.

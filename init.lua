@@ -76,6 +76,13 @@ config.plugins.assistant = common.merge({
       }
     },
     {
+      label = "Agent Settings",
+      description = "Configure provider-specific model, endpoint, command, and reasoning options.",
+      type = "subconfig",
+      title = "Assistant Agent Settings",
+      spec = agent_config.config_spec()
+    },
+    {
       label = "Stream Responses",
       description = "Use Server-Sent Events streaming when supported.",
       path = "stream",

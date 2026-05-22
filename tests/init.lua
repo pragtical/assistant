@@ -5,9 +5,11 @@ local command = require "core.command"
 local config = require "core.config"
 local core = require "core"
 local keymap = require "core.keymap"
+local settings = require "plugins.settings"
 local Conversation = require "plugins.assistant.conversation"
 local Ollama = require "plugins.assistant.agent.ollama"
 local PromptView = require "plugins.assistant.promptview"
+local agent_config = require "plugins.assistant.agent_config"
 
 local assistant = dofile("init.lua")
 
@@ -24,6 +26,18 @@ local function has_value(values, expected)
     if value == expected then return true end
   end
   return false
+end
+
+local function find_option(options, label)
+  for _, option in ipairs(options or {}) do
+    if option.label == label then return option end
+  end
+end
+
+local function find_section(sections, name)
+  for _, section in ipairs(sections or {}) do
+    if section.name == name then return section end
+  end
 end
 
 test.describe("assistant plugin init", function()
@@ -124,6 +138,39 @@ test.describe("assistant plugin init", function()
       end
     end
     test.equal(found_external, true)
+  end)
+
+  test.it("exposes per-agent settings as a subconfig", function()
+    local option = find_option(config.plugins.assistant.config_spec, "Agent Settings")
+
+    test.not_nil(option)
+    test.equal(option.type, settings.type.SUBCONFIG)
+    test.equal(option.title, "Assistant Agent Settings")
+    test.not_nil(option.spec)
+    test.equal(option.spec.path_prefix, "agents")
+
+    local ollama = find_section(option.spec.sections, "Ollama")
+    local openai = find_section(option.spec.sections, "OpenAI")
+    local acp = find_section(option.spec.sections, "ACP")
+
+    test.not_nil(ollama)
+    test.not_nil(openai)
+    test.not_nil(acp)
+    test.equal(find_option(ollama.options, "Model").path, "ollama.model")
+    test.equal(find_option(ollama.options, "Base URL").path, "ollama.base_url")
+    test.equal(find_option(openai.options, "API Key Environment").path, "openai.api_key_env")
+    test.equal(find_option(acp.options, "Transport").path, "acp.transport")
+  end)
+
+  test.it("generates built-in agent config sections", function()
+    local spec = agent_config.config_spec()
+
+    test.equal(spec.name, "Assistant Agent Settings")
+    test.equal(spec.path_prefix, "agents")
+    test.equal(#spec.sections, 7)
+    test.not_nil(find_section(spec.sections, "llama.cpp"))
+    test.not_nil(find_section(spec.sections, "LM Studio"))
+    test.not_nil(find_section(spec.sections, "GitHub Copilot"))
   end)
 
   test.it("keeps new conversation command on configured default agent", function()
