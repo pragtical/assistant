@@ -15,6 +15,7 @@ local HttpBackend = require "plugins.assistant.backend.http"
 local CliBackend = require "plugins.assistant.backend.cli"
 local AppServerBackend = require "plugins.assistant.backend.appserver"
 local AcpBackend = require "plugins.assistant.backend.acp"
+local AnthropicBackend = require "plugins.assistant.backend.anthropic"
 local Ollama = require "plugins.assistant.agent.ollama"
 local LlamaCpp = require "plugins.assistant.agent.llamacpp"
 local Lms = require "plugins.assistant.agent.lms"
@@ -22,6 +23,8 @@ local OpenAI = require "plugins.assistant.agent.openai"
 local Codex = require "plugins.assistant.agent.codex"
 local Acp = require "plugins.assistant.agent.acp"
 local Copilot = require "plugins.assistant.agent.copilot"
+local Anthropic = require "plugins.assistant.agent.anthropic"
+local DeepSeek = require "plugins.assistant.agent.deepseek"
 
 config.plugins.assistant = common.merge({
   agent = "ollama",
@@ -72,7 +75,9 @@ config.plugins.assistant = common.merge({
         { "OpenAI", "openai" },
         { "Codex", "codex" },
         { "ACP", "acp" },
-        { "GitHub Copilot", "copilot" }
+        { "GitHub Copilot", "copilot" },
+        { "Anthropic", "anthropic" },
+        { "DeepSeek", "deepseek" }
       }
     },
     {
@@ -632,7 +637,10 @@ assistant.register_agent("openai", OpenAI)
 assistant.register_agent("codex", Codex)
 assistant.register_agent("acp", Acp)
 assistant.register_agent("copilot", Copilot)
+assistant.register_agent("anthropic", Anthropic)
+assistant.register_agent("deepseek", DeepSeek)
 assistant.register_backend("http", HttpBackend)
+assistant.register_backend("anthropic", AnthropicBackend)
 assistant.register_backend("cli", CliBackend)
 assistant.register_backend("appserver", AppServerBackend)
 assistant.register_backend("acp", AcpBackend)

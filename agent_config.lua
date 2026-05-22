@@ -57,6 +57,16 @@ local DEFAULTS = {
   copilot = {
     model = "",
     command = "copilot"
+  },
+  anthropic = {
+    model = "claude-sonnet-4-20250514",
+    base_url = "https://api.anthropic.com",
+    api_key_env = "ANTHROPIC_API_KEY"
+  },
+  deepseek = {
+    model = "deepseek-chat",
+    base_url = "https://api.deepseek.com",
+    api_key_env = "DEEPSEEK_API_KEY"
   }
 }
 
@@ -68,7 +78,7 @@ local AGENT_SPECS = {
       { label = "Model", path = "model", type = "string", default = DEFAULTS.ollama.model },
       { label = "Base URL", path = "base_url", type = "string", default = DEFAULTS.ollama.base_url },
       { label = "Keep Alive", path = "keep_alive", type = "string", default = DEFAULTS.ollama.keep_alive },
-      { label = "Reasoning Effort", path = "reasoning_effort", type = "selection", default = "", values = REASONING_EFFORT_VALUES }
+      { label = "Reasoning Effort", path = "reasoning_effort", type = "selection", values = REASONING_EFFORT_VALUES }
     }
   },
   {
@@ -77,7 +87,7 @@ local AGENT_SPECS = {
     fields = {
       { label = "Model", path = "model", type = "string", default = DEFAULTS.llamacpp.model },
       { label = "Base URL", path = "base_url", type = "string", default = DEFAULTS.llamacpp.base_url },
-      { label = "Reasoning Effort", path = "reasoning_effort", type = "selection", default = "", values = REASONING_EFFORT_VALUES }
+      { label = "Reasoning Effort", path = "reasoning_effort", type = "selection", values = REASONING_EFFORT_VALUES }
     }
   },
   {
@@ -86,7 +96,7 @@ local AGENT_SPECS = {
     fields = {
       { label = "Model", path = "model", type = "string", default = DEFAULTS.lms.model },
       { label = "Base URL", path = "base_url", type = "string", default = DEFAULTS.lms.base_url },
-      { label = "Reasoning Effort", path = "reasoning_effort", type = "selection", default = "", values = REASONING_EFFORT_VALUES }
+      { label = "Reasoning Effort", path = "reasoning_effort", type = "selection", values = REASONING_EFFORT_VALUES }
     }
   },
   {
@@ -96,8 +106,8 @@ local AGENT_SPECS = {
       { label = "Model", path = "model", type = "string", default = DEFAULTS.openai.model },
       { label = "Base URL", path = "base_url", type = "string", default = DEFAULTS.openai.base_url },
       { label = "API Key Environment", path = "api_key_env", type = "string", default = DEFAULTS.openai.api_key_env },
-      { label = "API Key", path = "api_key", type = "string", default = "" },
-      { label = "Reasoning Effort", path = "reasoning_effort", type = "selection", default = "", values = REASONING_EFFORT_VALUES }
+      { label = "API Key", path = "api_key", type = "string" },
+      { label = "Reasoning Effort", path = "reasoning_effort", type = "selection", values = REASONING_EFFORT_VALUES }
     }
   },
   {
@@ -106,7 +116,7 @@ local AGENT_SPECS = {
     fields = {
       { label = "Model", path = "model", type = "string", default = DEFAULTS.codex.model },
       { label = "Command", path = "command", type = "string", default = DEFAULTS.codex.command },
-      { label = "Reasoning Effort", path = "reasoning_effort", type = "selection", default = "", values = REASONING_EFFORT_VALUES }
+      { label = "Reasoning Effort", path = "reasoning_effort", type = "selection", values = REASONING_EFFORT_VALUES }
     }
   },
   {
@@ -121,7 +131,7 @@ local AGENT_SPECS = {
       } },
       { label = "Host", path = "host", type = "string", default = DEFAULTS.acp.host },
       { label = "Port", path = "port", type = "number", default = DEFAULTS.acp.port, min = 0, max = 65535 },
-      { label = "Reasoning Effort", path = "reasoning_effort", type = "selection", default = "", values = REASONING_EFFORT_VALUES }
+      { label = "Reasoning Effort", path = "reasoning_effort", type = "selection", values = REASONING_EFFORT_VALUES }
     }
   },
   {
@@ -130,7 +140,29 @@ local AGENT_SPECS = {
     fields = {
       { label = "Model", path = "model", type = "string", default = DEFAULTS.copilot.model },
       { label = "Command", path = "command", type = "string", default = DEFAULTS.copilot.command },
-      { label = "Reasoning Effort", path = "reasoning_effort", type = "selection", default = "", values = REASONING_EFFORT_VALUES }
+      { label = "Reasoning Effort", path = "reasoning_effort", type = "selection", values = REASONING_EFFORT_VALUES }
+    }
+  },
+  {
+    key = "anthropic",
+    name = "Anthropic",
+    fields = {
+      { label = "Model", path = "model", type = "string", default = DEFAULTS.anthropic.model },
+      { label = "Base URL", path = "base_url", type = "string", default = DEFAULTS.anthropic.base_url },
+      { label = "API Key Environment", path = "api_key_env", type = "string", default = DEFAULTS.anthropic.api_key_env },
+      { label = "API Key", path = "api_key", type = "string" },
+      { label = "Reasoning Effort", path = "reasoning_effort", type = "selection", values = REASONING_EFFORT_VALUES }
+    }
+  },
+  {
+    key = "deepseek",
+    name = "DeepSeek",
+    fields = {
+      { label = "Model", path = "model", type = "string", default = DEFAULTS.deepseek.model },
+      { label = "Base URL", path = "base_url", type = "string", default = DEFAULTS.deepseek.base_url },
+      { label = "API Key Environment", path = "api_key_env", type = "string", default = DEFAULTS.deepseek.api_key_env },
+      { label = "API Key", path = "api_key", type = "string" },
+      { label = "Reasoning Effort", path = "reasoning_effort", type = "selection", values = REASONING_EFFORT_VALUES }
     }
   }
 }
@@ -263,9 +295,6 @@ function agent_config.get_agent_spec(agent_name)
       for _, field in ipairs(spec.fields) do
         local option = clone(field)
         option.path = agent_name .. "." .. field.path
-        if option.default == "" then
-          option.default = nil
-        end
         table.insert(options, option)
       end
       return {

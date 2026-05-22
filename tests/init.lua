@@ -167,7 +167,7 @@ test.describe("assistant plugin init", function()
 
     test.equal(spec.name, "Assistant Agent Settings")
     test.equal(spec.path_prefix, "agents")
-    test.equal(#spec.sections, 7)
+    test.equal(#spec.sections, 9)
     test.not_nil(find_section(spec.sections, "llama.cpp"))
     test.not_nil(find_section(spec.sections, "LM Studio"))
     test.not_nil(find_section(spec.sections, "GitHub Copilot"))

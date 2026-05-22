@@ -16,7 +16,9 @@
         "lms",
         "codex",
         "copilot",
-        "acp"
+        "acp",
+        "anthropic",
+        "deepseek"
       ]
     }
   ]
