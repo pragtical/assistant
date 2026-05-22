@@ -15,6 +15,7 @@ local DocView = require "core.docview"
 local MarkdownView = require "core.markdownview"
 local Conversation = require "plugins.assistant.conversation"
 local tools = require "plugins.assistant.tools"
+local agent_config = require "plugins.assistant.agent_config"
 local HttpBackend = require "plugins.assistant.backend.http"
 local AppServerBackend = require "plugins.assistant.backend.appserver"
 local CliBackend = require "plugins.assistant.backend.cli"
@@ -253,7 +254,7 @@ local function make_agent(name)
   local cls = DEFAULT_AGENT_CLASSES[name or "ollama"] or Ollama
   local agent = cls()
   local conf = config.plugins.assistant or {}
-  return tools.register_agent_tools(agent:configure(conf))
+  return tools.register_agent_tools(agent_config.apply(agent, conf))
 end
 
 ---Handle make backend.

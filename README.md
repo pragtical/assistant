@@ -67,7 +67,8 @@ Common options:
 
 - `agent`: default provider (`ollama`, `llamacpp`, `lms`, `openai`, `codex`,
   `acp`, or `copilot`)
-- `model`, `base_url`, `api_key`, `api_key_env`
+- `agents`: per-agent provider configuration, set programmatically with
+  `assistant.configure_agent(name, options)`
 - `stream`: enable streaming responses
 - `reasoning_effort`: `none`, `low`, `medium`, or `high`
 - `send_max_tokens` and `send_max_tokens_amount`
@@ -80,8 +81,27 @@ Common options:
 - `web_search_url`, `web_search_query_param`, `web_timeout_ms`,
   `web_allow_hosts`
 
-Local providers do not receive API keys unless their agent explicitly opts into
-API key authentication.
+Provider-specific settings such as model, base URL, command, transport, API key,
+and keep-alive are intentionally not exposed in the settings UI yet. Configure
+them from user init code, for example:
+
+```lua
+local assistant = require "plugins.assistant"
+
+assistant.configure_agent("ollama", {
+  base_url = "http://127.0.0.1:11434",
+  model = "glm-5.1:cloud",
+  keep_alive = "-1"
+})
+
+assistant.configure_agent("acp", {
+  command = "some-acp-agent",
+  transport = "stdio"
+})
+```
+
+Local providers do not receive API keys unless their agent configuration
+explicitly opts into API key authentication.
 
 ## Commands And Keymaps
 

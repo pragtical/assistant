@@ -85,9 +85,7 @@ test.describe("assistant prompt view", function()
 
   test.it("restores copilot conversations with the ACP backend", function()
     local old_agent = config.plugins.assistant.agent
-    local old_model = config.plugins.assistant.model
     config.plugins.assistant.agent = "ollama"
-    config.plugins.assistant.model = ""
 
     local agent = Copilot()
     local conversation = Conversation(agent, "/tmp")
@@ -100,7 +98,6 @@ test.describe("assistant prompt view", function()
     })
 
     config.plugins.assistant.agent = old_agent
-    config.plugins.assistant.model = old_model
 
     test.not_nil(restored)
     test.equal(restored.agent.name, "copilot")
@@ -836,8 +833,12 @@ test.describe("assistant prompt view", function()
     local old_config = config.plugins.assistant
     config.plugins.assistant = {
       agent = "ollama",
-      api_key = "openai-key",
-      api_key_env = "OPENAI_API_KEY",
+      agents = {
+        ollama = {
+          api_key = "openai-key",
+          api_key_env = "OPENAI_API_KEY"
+        }
+      },
       stream = true
     }
 
@@ -852,7 +853,11 @@ test.describe("assistant prompt view", function()
     local old_config = config.plugins.assistant
     config.plugins.assistant = {
       agent = "ollama",
-      keep_alive = "1h",
+      agents = {
+        ollama = {
+          keep_alive = "1h"
+        }
+      },
       stream = true
     }
 

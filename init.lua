@@ -8,6 +8,7 @@ local keymap = require "core.keymap"
 local Conversation = require "plugins.assistant.conversation"
 local PromptView = require "plugins.assistant.promptview"
 local tools = require "plugins.assistant.tools"
+local agent_config = require "plugins.assistant.agent_config"
 local ConversationsList = require "plugins.assistant.ui.conversationslist"
 local MemoriesList = require "plugins.assistant.ui.memorieslist"
 local HttpBackend = require "plugins.assistant.backend.http"
@@ -25,17 +26,7 @@ local Copilot = require "plugins.assistant.agent.copilot"
 config.plugins.assistant = common.merge({
   agent = "ollama",
   backend = "http",
-  model = "",
-  base_url = "",
-  api_key = "",
-  api_key_env = "",
-  codex_command = "",
-  acp_command = "",
-  acp_transport = "stdio",
-  acp_host = "127.0.0.1",
-  acp_port = 0,
-  copilot_command = "",
-  keep_alive = "-1",
+  agents = agent_config.defaults(),
   debug = false,
   log_protocol = false,
   log_raw_messages = true,
@@ -83,80 +74,6 @@ config.plugins.assistant = common.merge({
         { "ACP", "acp" },
         { "GitHub Copilot", "copilot" }
       }
-    },
-    {
-      label = "Model",
-      description = "Model name sent to the provider. Leave empty for provider default.",
-      path = "model",
-      type = "string"
-    },
-    {
-      label = "Base URL",
-      description = "Provider base URL. Leave empty for provider default.",
-      path = "base_url",
-      type = "string"
-    },
-    {
-      label = "API Key",
-      description = "Provider API key. Leave empty to use the environment variable instead.",
-      path = "api_key",
-      type = "string"
-    },
-    {
-      label = "API key environment variable",
-      description = "Environment variable containing the API key, if needed.",
-      path = "api_key_env",
-      type = "string"
-    },
-    {
-      label = "Codex Command",
-      description = "Path to the codex executable. Leave empty to search PATH and common user bin directories.",
-      path = "codex_command",
-      type = "string"
-    },
-    {
-      label = "ACP Command",
-      description = "Command for generic ACP agents. Presets may ignore this.",
-      path = "acp_command",
-      type = "string"
-    },
-    {
-      label = "ACP Transport",
-      description = "Transport for generic ACP agents.",
-      path = "acp_transport",
-      type = "selection",
-      default = "stdio",
-      values = {
-        { "stdio", "stdio" },
-        { "tcp", "tcp" }
-      }
-    },
-    {
-      label = "ACP Host",
-      description = "Host for TCP ACP agents.",
-      path = "acp_host",
-      type = "string",
-      default = "127.0.0.1"
-    },
-    {
-      label = "ACP Port",
-      description = "Port for TCP ACP agents.",
-      path = "acp_port",
-      type = "number",
-      default = 0
-    },
-    {
-      label = "Copilot Command",
-      description = "Path to the GitHub Copilot executable. Leave empty to use `copilot --acp --stdio`.",
-      path = "copilot_command",
-      type = "string"
-    },
-    {
-      label = "Keep Alive",
-      description = "Only applies to agents that support keep-alive. Controls how long capable providers keep models loaded after requests. Use -1 to keep loaded indefinitely, 0 to unload immediately, or durations like 30s, 1m, 30m, 1h.",
-      path = "keep_alive",
-      type = "string",
-      default = "-1"
     },
     {
       label = "Stream Responses",
@@ -371,6 +288,21 @@ function assistant.unregister_agent(name)
   assistant.agents[name] = nil
 end
 
+---Configure provider-specific defaults for an assistant agent.
+---@param name string Agent id, such as `"ollama"` or `"openai"`.
+---@param options assistant.agent.config Agent-specific configuration values.
+---@return boolean ok True when the configuration was merged.
+function assistant.configure_agent(name, options)
+  return agent_config.configure(name, options)
+end
+
+---Return the resolved configuration for an assistant agent.
+---@param name string Agent id.
+---@return assistant.agent.config? config Effective configuration, or nil for invalid names.
+function assistant.get_agent_config(name)
+  return agent_config.get(name)
+end
+
 ---Return an agent class by name or the configured default.
 ---@param name string?
 ---@return assistant.AgentClass?
@@ -463,8 +395,7 @@ end
 local function configured_agent(name)
   local cls = assistant.get_agent(name)
   local agent = cls and cls() or Ollama()
-  local conf = config.plugins.assistant
-  agent:configure(conf)
+  agent_config.apply(agent, config.plugins.assistant)
   return tools.register_agent_tools(agent)
 end
 

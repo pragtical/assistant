@@ -854,10 +854,10 @@ core.add_thread(function()
     system.chdir(project_dir)
     close_all_views()
 
-    require "plugins.assistant"
+    local assistant = require "plugins.assistant"
     config.plugins.assistant.agent = AGENT
     if not USE_CONFIG_MODEL then
-      config.plugins.assistant.model = model or provider.model
+      assistant.configure_agent(AGENT, { model = model or provider.model })
     end
     config.plugins.assistant.stream = true
     config.plugins.assistant.log_raw_messages = true

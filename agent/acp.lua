@@ -50,17 +50,19 @@ end
 ---Handle configure provider.
 ---@param conf table
 function Acp:configure_provider(conf)
-  if conf.acp_command and conf.acp_command ~= "" then
-    self.command = { conf.acp_command }
+  if type(conf.command) == "table" then
+    self.command = conf.command
+  elseif conf.command and conf.command ~= "" then
+    self.command = { conf.command }
   end
-  if conf.acp_transport and conf.acp_transport ~= "" then
-    self.transport = conf.acp_transport
+  if conf.transport and conf.transport ~= "" then
+    self.transport = conf.transport
   end
-  if conf.acp_host and conf.acp_host ~= "" then
-    self.host = conf.acp_host
+  if conf.host and conf.host ~= "" then
+    self.host = conf.host
   end
-  if conf.acp_port and tonumber(conf.acp_port) and tonumber(conf.acp_port) > 0 then
-    self.port = tonumber(conf.acp_port)
+  if conf.port and tonumber(conf.port) and tonumber(conf.port) > 0 then
+    self.port = tonumber(conf.port)
   end
 end
 

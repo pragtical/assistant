@@ -94,10 +94,10 @@ and should remain separate from the main system role message.
 Do not persist secrets or transient HTTP/process handles in saved sessions.
 Raw provider logs and live-test artifacts may contain prompts, paths, provider
 payloads, and generated code; treat them as local debug artifacts unless they
-have been reviewed and sanitized. The global `api_key` setting is intended for
-agents that declare an API key environment variable, such as OpenAI. Do not send
-that key to local providers like Ollama unless the provider explicitly opts into
-API key authentication.
+have been reviewed and sanitized. Provider-specific authentication belongs in
+`config.plugins.assistant.agents.<name>` or `assistant.configure_agent(name,
+options)`. Do not send API keys to local providers like Ollama unless that
+agent configuration explicitly opts into API key authentication.
 
 ## Backend Model
 

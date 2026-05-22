@@ -537,9 +537,9 @@ core.add_thread(function()
     log("project: %s", core.root_project() and core.root_project().path or "<none>")
     close_all_views()
 
-    require "plugins.assistant"
+    local assistant = require "plugins.assistant"
     config.plugins.assistant.agent = "copilot"
-    config.plugins.assistant.model = "Auto"
+    assistant.configure_agent("copilot", { model = "Auto" })
     config.plugins.assistant.log_raw_messages = true
     config.plugins.assistant.log_protocol = true
     config.plugins.assistant.verbose_tool_calling = true

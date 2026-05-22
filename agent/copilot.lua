@@ -18,8 +18,8 @@ end
 ---Handle configure provider.
 ---@param conf table
 function Copilot:configure_provider(conf)
-  if conf.copilot_command and conf.copilot_command ~= "" then
-    self.command = { conf.copilot_command, "--acp", "--stdio" }
+  if conf.command and conf.command ~= "" then
+    self.command = { conf.command, "--acp", "--stdio" }
   else
     Acp.configure_provider(self, conf)
   end

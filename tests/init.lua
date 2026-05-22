@@ -34,6 +34,7 @@ test.describe("assistant plugin init", function()
   local old_core_error
   local old_command_view_enter
   local old_agent_config
+  local old_agents_config
   local old_start_conversation
 
   test.before_each(function()
@@ -44,6 +45,8 @@ test.describe("assistant plugin init", function()
     old_core_error = core.error
     old_command_view_enter = core.command_view.enter
     old_agent_config = config.plugins.assistant.agent
+    old_agents_config = config.plugins.assistant.agents
+    config.plugins.assistant.agents = {}
     old_start_conversation = assistant.start_conversation
     assistant.unregister_tool("external_test_tool")
     assistant.unregister_tool("external_invalid_tool")
@@ -70,6 +73,7 @@ test.describe("assistant plugin init", function()
     core.error = old_core_error
     core.command_view.enter = old_command_view_enter
     config.plugins.assistant.agent = old_agent_config
+    config.plugins.assistant.agents = old_agents_config
     assistant.start_conversation = old_start_conversation
     command.map["core:open-file"] = old_open_file
     command.map["core:find-file"] = old_find_file
@@ -135,6 +139,92 @@ test.describe("assistant plugin init", function()
 
     assistant.start_conversation = old_start
     test.equal(started_agent, "ollama")
+  end)
+
+  test.it("configures per-agent provider options programmatically", function()
+    assistant.configure_agent("ollama", {
+      model = "configured-ollama",
+      base_url = "http://127.0.0.1:19999",
+      keep_alive = "1h",
+      reasoning_effort = "medium"
+    })
+    assistant.configure_agent("openai", {
+      model = "configured-openai",
+      base_url = "https://example.invalid",
+      api_key_env = "ASSISTANT_TEST_KEY"
+    })
+
+    local ollama_view = assistant.start_conversation("ollama")
+    local openai_view = assistant.start_conversation("openai")
+
+    test.equal(ollama_view.agent.model, "configured-ollama")
+    test.equal(ollama_view.agent.base_url, "http://127.0.0.1:19999")
+    test.equal(ollama_view.agent.keep_alive, "1h")
+    test.equal(ollama_view.agent:configured_reasoning_effort(), "medium")
+    test.equal(openai_view.agent.model, "configured-openai")
+    test.equal(openai_view.agent.base_url, "https://example.invalid")
+    test.equal(openai_view.agent.api_key_env, "ASSISTANT_TEST_KEY")
+  end)
+
+  test.it("ignores removed flat provider config keys", function()
+    local conf = config.plugins.assistant
+    conf["model"] = "flat-model"
+    conf["base_url"] = "https://flat.invalid"
+    conf["keep_alive"] = "2h"
+
+    local view = assistant.start_conversation("ollama")
+
+    conf["model"] = nil
+    conf["base_url"] = nil
+    conf["keep_alive"] = nil
+    test.equal(view.agent.model, "llama3.1")
+    test.equal(view.agent.base_url, "http://127.0.0.1:11434")
+    test.equal(view.agent.keep_alive, "-1")
+  end)
+
+  test.it("reports invalid per-agent configuration without throwing", function()
+    local errors = {}
+    core.error = function(format, ...)
+      table.insert(errors, string.format(format, ...))
+    end
+
+    test.equal(assistant.configure_agent(nil, {}), false)
+    test.equal(assistant.configure_agent("ollama"), false)
+    test.equal(#errors, 2)
+    test.equal(errors[1]:find("requires an agent name", 1, true) ~= nil, true)
+    test.equal(errors[2]:find("requires a config table", 1, true) ~= nil, true)
+  end)
+
+  test.it("applies per-agent command and transport options", function()
+    assistant.configure_agent("codex", {
+      command = "codex-test",
+      model = "gpt-test",
+      reasoning_effort = "high"
+    })
+    assistant.configure_agent("acp", {
+      command = "acp-test",
+      transport = "tcp",
+      host = "127.0.0.2",
+      port = 7777
+    })
+    assistant.configure_agent("copilot", {
+      command = "copilot-test"
+    })
+
+    local codex = assistant.start_conversation("codex").agent
+    local acp = assistant.start_conversation("acp").agent
+    local copilot = assistant.start_conversation("copilot").agent
+
+    test.equal(codex.command, "codex-test")
+    test.equal(codex.model, "gpt-test")
+    test.equal(codex:configured_reasoning_effort(), "high")
+    test.equal(acp.command[1], "acp-test")
+    test.equal(acp.transport, "tcp")
+    test.equal(acp.host, "127.0.0.2")
+    test.equal(acp.port, 7777)
+    test.equal(copilot.command[1], "copilot-test")
+    test.equal(copilot.command[2], "--acp")
+    test.equal(copilot.command[3], "--stdio")
   end)
 
   test.it("opens agent picker for optional new conversation selection", function()

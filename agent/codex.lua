@@ -52,8 +52,8 @@ end
 ---Handle configure provider.
 ---@param conf table
 function Codex:configure_provider(conf)
-  if conf.codex_command and conf.codex_command ~= "" then
-    self.command = conf.codex_command
+  if conf.command and conf.command ~= "" then
+    self.command = conf.command
   end
 end
 

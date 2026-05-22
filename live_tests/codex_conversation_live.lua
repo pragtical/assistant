@@ -523,9 +523,9 @@ core.add_thread(function()
     system.chdir(tetris_dir)
     close_all_views()
 
-    require "plugins.assistant"
+    local assistant = require "plugins.assistant"
     config.plugins.assistant.agent = "codex"
-    config.plugins.assistant.model = MODEL
+    assistant.configure_agent("codex", { model = MODEL })
     config.plugins.assistant.log_raw_messages = true
     config.plugins.assistant.log_protocol = true
     config.plugins.assistant.verbose_tool_calling = true

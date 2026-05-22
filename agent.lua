@@ -130,6 +130,9 @@ function Agent:configure(conf)
   if self:has_capability("keep_alive") and conf.keep_alive and conf.keep_alive ~= "" then
     self.keep_alive = conf.keep_alive
   end
+  if conf.reasoning_effort ~= nil then
+    self.reasoning_effort = conf.reasoning_effort
+  end
   self.stream = conf.stream ~= false and self:has_capability("stream_responses")
   self:configure_provider(conf)
   return self
