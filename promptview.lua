@@ -316,6 +316,8 @@ function PromptView:new(options)
   configure_icon_button(self.send_button, ">")
   self.model_button = Button(self)
   configure_icon_button(self.model_button, "K")
+  self.configure_button = Button(self)
+  configure_icon_button(self.configure_button, "P")
   self.cancel_button = Button(self)
   configure_icon_button(self.cancel_button, "!")
   self.compact_button = Button(self)
@@ -382,6 +384,11 @@ function PromptView:new(options)
       widget = self.model_button,
       tooltip = "Select model",
       command = "assistant-conversation:select-model"
+    },
+    {
+      widget = self.configure_button,
+      tooltip = "Configure current agent",
+      command = "assistant-conversation:configure-agent"
     },
     {
       widget = self.cancel_button,
@@ -1574,6 +1581,30 @@ function PromptView:compact()
   self:refresh()
 end
 
+---Configure the current agent.
+function PromptView:configure_agent()
+  local agent_name = self.agent and self.agent.name
+  if not agent_name then return end
+  
+  local agent_config = require "plugins.assistant.agent_config"
+  local spec = agent_config.get_agent_spec(agent_name)
+  if not spec then
+    core.warn("Assistant: no configuration spec available for %s", agent_name)
+    return
+  end
+  
+  local settings = package.loaded["plugins.settings"]
+  if settings and settings.show_config then
+    settings.show_config(
+      string.format("Configure %s", self.agent.display_name or agent_name),
+      spec,
+      "assistant"
+    )
+  else
+    core.warn("Assistant: settings plugin not available")
+  end
+end
+
 ---Handle active conversation view.
 function PromptView.active_conversation_view()
   local view = core.active_view
@@ -1656,11 +1687,13 @@ function PromptView:update()
   local mode_select_h = self.mode_select:is_visible() and widget_height(self.mode_select) or 0
   if mode_select_h > 0 then
     self.model_button:set_size(nil, mode_select_h)
+    self.configure_button:set_size(nil, mode_select_h)
     self.cancel_button:set_size(nil, mode_select_h)
     self.compact_button:set_size(nil, mode_select_h)
   end
   local button_h = math.max(
     widget_height(self.model_button),
+    widget_height(self.configure_button),
     widget_height(self.cancel_button),
     self.compact_button:is_visible() and widget_height(self.compact_button) or 0,
     mode_select_h
@@ -1680,6 +1713,8 @@ function PromptView:update()
   self.cancel_button:set_position(x, button_y)
   x = x - button_gap - widget_width(self.model_button)
   self.model_button:set_position(x, button_y)
+  x = x - button_gap - widget_width(self.configure_button)
+  self.configure_button:set_position(x, button_y)
 
   self.title:set_position(left, title_y)
   local status_x = self.title:get_right() + padding

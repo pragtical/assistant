@@ -252,4 +252,27 @@ function agent_config.get(name)
   return agent_config.resolve(name)
 end
 
+---Return a generated settings spec for a single agent.
+---@param agent_name string
+---@return settings.config_spec|nil spec
+function agent_config.get_agent_spec(agent_name)
+  if type(agent_name) ~= "string" or agent_name == "" then return nil end
+  for _, spec in ipairs(AGENT_SPECS) do
+    if spec.key == agent_name then
+      local options = {}
+      for _, field in ipairs(spec.fields) do
+        local option = clone(field)
+        option.path = agent_name .. "." .. field.path
+        table.insert(options, option)
+      end
+      return {
+        name = spec.name,
+        path_prefix = "agents",
+        table.unpack(options)
+      }
+    end
+  end
+  return nil
+end
+
 return agent_config

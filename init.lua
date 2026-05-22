@@ -708,6 +708,9 @@ command.add(PromptView.active_predicate, {
   ["assistant-conversation:select-model"] = function(view)
     view:open_model_dialog()
   end,
+  ["assistant-conversation:configure-agent"] = function(view)
+    view:configure_agent()
+  end,
   ["assistant-conversation:cancel"] = function(view)
     view:cancel()
   end,
