@@ -46,17 +46,21 @@ end
 test.describe("assistant ACP backend", function()
   local old_reasoning_activity_messages
   local old_reasoning_effort
+  local old_verbose_activity
 
   test.before_each(function()
     old_reasoning_activity_messages = config.plugins.assistant.reasoning_activity_messages
     old_reasoning_effort = config.plugins.assistant.reasoning_effort
+    old_verbose_activity = config.plugins.assistant.verbose_activity
     config.plugins.assistant.reasoning_activity_messages = true
+    config.plugins.assistant.verbose_activity = false
   end)
 
   test.after_each(function()
     process = real_process
     config.plugins.assistant.reasoning_activity_messages = old_reasoning_activity_messages
     config.plugins.assistant.reasoning_effort = old_reasoning_effort
+    config.plugins.assistant.verbose_activity = old_verbose_activity
   end)
 
   test.it("creates a session and streams ACP message chunks", function()

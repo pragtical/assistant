@@ -55,6 +55,18 @@ local function decode_error_body(body)
   return json.decode(body) or body
 end
 
+---Build raw error payload.
+local function raw_error_payload(info, result, fallback)
+  if result ~= nil then return result end
+  local payload = {}
+  local status = info and tonumber(info.status)
+  if status then payload.status = status end
+  if type(fallback) == "string" and fallback ~= "" then
+    payload.message = fallback
+  end
+  return next(payload) and payload or nil
+end
+
 ---Handle configured timeout ms.
 local function configured_timeout_ms(agent)
   local timeout_ms = config.plugins
@@ -1383,7 +1395,8 @@ function HttpBackend:send(agent, conversation, callback)
     self:finish_request()
     agent:set_loading(false)
     conversation:set_status("error", { autosave = false })
-    if result ~= nil then conversation:append_raw_response("http-error", result) end
+    local raw_error = raw_error_payload(info, result, err)
+    if raw_error ~= nil then conversation:append_raw_response("http-error", raw_error) end
     callback(false, err, nil, { info = info })
   end
 
@@ -1966,9 +1979,10 @@ function HttpBackend:send(agent, conversation, callback)
         else
           flush_raw_stream_events(true)
           local error_body = decode_error_body(table.concat(error_chunks))
+          local raw_error = raw_error_payload(info, error_body, err)
           conversation:set_status("error", { autosave = false })
-          conversation:append_raw_response("http-error", error_body)
-          callback(false, request_error("Chat request", agent, info, error_body, err), nil, { info = info })
+          if raw_error ~= nil then conversation:append_raw_response("http-error", raw_error) end
+          callback(false, request_error("Chat request", agent, info, raw_error, err), nil, { info = info })
         end
       end
     })

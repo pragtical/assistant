@@ -49,6 +49,8 @@ local REASONING_EFFORT_VALUES = {
 ---@param options table|nil Agent configuration and provider defaults.
 function Agent:new(options)
   options = options or {}
+  local explicit_context = options.options
+    and options.options.context ~= nil
   self.name = options.name or "generic"
   self.display_name = options.display_name or self.name
   self.version = options.version or "0.1"
@@ -62,6 +64,8 @@ function Agent:new(options)
   self.api_key_env = options.api_key_env
   self.api_key = options.api_key
   self.stream = options.stream ~= false
+  self.reasoning_effort = options.reasoning_effort
+  self.reasoning_effort_inherited = options.reasoning_effort_inherited == true
   self.capabilities = common.merge({
     reports_usage = false,
     reports_context = false,
@@ -101,6 +105,9 @@ function Agent:new(options)
     max_output_tokens = nil,
     chat_reasoning_effort = false
   }, options.model_metadata or {})
+  if not explicit_context and self.model_metadata.context_window then
+    self.options.context = self.model_metadata.context_window
+  end
 end
 
 ---Return whether capability is available.
@@ -131,9 +138,19 @@ function Agent:configure(conf)
   if self:has_capability("keep_alive") and conf.keep_alive and conf.keep_alive ~= "" then
     self.keep_alive = conf.keep_alive
   end
+  if type(conf.capabilities) == "table" then
+    self.capabilities = common.merge(self.capabilities or {}, conf.capabilities)
+  end
+  if type(conf.tool_calling) == "boolean" then
+    self.capabilities.tool_calling = conf.tool_calling
+  end
+  self.model_metadata.stream_tool_calls = self.capabilities.stream_responses == true
+    and self.capabilities.tool_calling == true
+  self.model_metadata.reports_usage = self.capabilities.reports_usage == true
   if conf.reasoning_effort ~= nil then
     self.reasoning_effort = conf.reasoning_effort
   end
+  self.reasoning_effort_inherited = conf.reasoning_effort_inherited == true
   self.stream = conf.stream ~= false and self:has_capability("stream_responses")
   self:configure_provider(conf)
   return self
@@ -1471,7 +1488,10 @@ function Agent:tool_call_provider_message(calls, index)
   local reasoning = calls
     and calls[1]
     and calls[1]._assistant_provider_reasoning_content
-  if type(reasoning) == "string" and reasoning ~= "" then
+  if type(reasoning) == "string"
+    and reasoning ~= ""
+    and self:should_persist_reasoning_content()
+  then
     message.reasoning_content = reasoning
   end
   return message

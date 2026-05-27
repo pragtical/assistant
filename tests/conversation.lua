@@ -513,4 +513,27 @@ test.describe("assistant conversation", function()
     test.equal(conversation:context_left(), 975)
     test.equal(conversation.options.context, 1000)
   end)
+
+  test.it("keeps explicit agent context for new conversations", function()
+    local agent = Ollama({
+      options = { context = 100 },
+      model_metadata = { context_window = 1000 }
+    })
+    local conversation = Conversation(agent, root)
+    conversation:set_usage({ total_tokens = 25 })
+
+    test.equal(conversation.options.context, 100)
+    test.equal(conversation:context_left(), 75)
+  end)
+
+  test.it("uses agent model metadata context when context is not explicit", function()
+    local agent = Ollama({
+      model_metadata = { context_window = 1000 }
+    })
+    local conversation = Conversation(agent, root)
+    conversation:set_usage({ total_tokens = 25 })
+
+    test.equal(conversation.options.context, 1000)
+    test.equal(conversation:context_left(), 975)
+  end)
 end)

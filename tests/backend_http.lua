@@ -18,6 +18,7 @@ test.describe("assistant http backend", function()
   local old_request_timeout_ms
   local old_fetch_model_metadata
   local old_verbose_tool_calling
+  local old_verbose_activity
   local old_reasoning_activity_messages
   local old_persist_reasoning_content
 
@@ -27,6 +28,7 @@ test.describe("assistant http backend", function()
     old_request_timeout_ms = config.plugins.assistant.request_timeout_ms
     old_fetch_model_metadata = config.plugins.assistant.fetch_model_metadata
     old_verbose_tool_calling = config.plugins.assistant.verbose_tool_calling
+    old_verbose_activity = config.plugins.assistant.verbose_activity
     old_reasoning_activity_messages = config.plugins.assistant.reasoning_activity_messages
     old_persist_reasoning_content = config.plugins.assistant.persist_reasoning_content
     config.plugins.assistant.allow_any_read_path = false
@@ -34,6 +36,7 @@ test.describe("assistant http backend", function()
     config.plugins.assistant.request_timeout_ms = 300000
     config.plugins.assistant.fetch_model_metadata = false
     config.plugins.assistant.verbose_tool_calling = false
+    config.plugins.assistant.verbose_activity = false
     config.plugins.assistant.reasoning_activity_messages = true
     config.plugins.assistant.persist_reasoning_content = false
   end)
@@ -44,6 +47,7 @@ test.describe("assistant http backend", function()
     config.plugins.assistant.request_timeout_ms = old_request_timeout_ms
     config.plugins.assistant.fetch_model_metadata = old_fetch_model_metadata
     config.plugins.assistant.verbose_tool_calling = old_verbose_tool_calling
+    config.plugins.assistant.verbose_activity = old_verbose_activity
     config.plugins.assistant.reasoning_activity_messages = old_reasoning_activity_messages
     config.plugins.assistant.persist_reasoning_content = old_persist_reasoning_content
   end)
@@ -112,6 +116,30 @@ test.describe("assistant http backend", function()
     http.request = old_request
     test.equal(ok_result, false)
     test.equal(err_result, "Chat request failed for Ollama: HTTP 400: request failed")
+  end)
+
+  test.it("records transport errors from streaming requests in raw logs", function()
+    local old_request = http.request
+    http.request = function(_, _, options)
+      options.on_header({ status = 200 })
+      options.on_done(false, "socket reset", nil, { status = 200 })
+    end
+
+    local agent = Ollama({ stream = true })
+    local conversation = Conversation(agent, "project")
+    local backend = HttpBackend()
+    local err_result
+
+    backend:send(agent, conversation, function(_, err)
+      err_result = err
+    end)
+
+    http.request = old_request
+    local raw = conversation:raw_responses_text()
+    test.equal(err_result, "Chat request failed for Ollama: HTTP 200: socket reset")
+    test.equal(raw:find('"kind":"http-error"', 1, true) ~= nil, true)
+    test.equal(raw:find('"message":"socket reset"', 1, true) ~= nil, true)
+    test.equal(raw:find('"status":200', 1, true) ~= nil, true)
   end)
 
   test.it("explains streaming 429 responses without a parsed json body", function()
@@ -537,8 +565,30 @@ test.describe("assistant http backend", function()
     test.equal(found_reasoning, true)
   end)
 
-  test.it("replays stored reasoning_content for DeepSeek provider messages", function()
+  test.it("replays stored reasoning_content for DeepSeek by default", function()
     local agent = DeepSeek()
+    local conversation = Conversation(agent, "project")
+    conversation:add("assistant", "answer", {
+      autosave = false,
+      meta = {
+        provider_reasoning_content = "private chain"
+      }
+    })
+
+    local payload = agent:build_payload(conversation)
+    local assistant_message
+    for _, message in ipairs(payload.messages or {}) do
+      if message.role == "assistant" and message.content == "answer" then
+        assistant_message = message
+      end
+    end
+
+    test.not_nil(assistant_message)
+    test.equal(assistant_message.reasoning_content, "private chain")
+  end)
+
+  test.it("replays stored reasoning_content for explicit DeepSeek reasoning", function()
+    local agent = DeepSeek({ reasoning_effort = "low" })
     local conversation = Conversation(agent, "project")
     conversation:add("assistant", "answer", {
       autosave = false,
@@ -604,7 +654,7 @@ test.describe("assistant http backend", function()
     test.equal(assistant_message.reasoning_content, "private chain")
   end)
 
-  test.it("returns streamed reasoning_content metadata for opted-in agents", function()
+  test.it("returns streamed reasoning_content metadata for explicit DeepSeek reasoning", function()
     local old_request = http.request
     http.request = function(_, _, options)
       options.on_header({ status = 200 })
@@ -614,7 +664,7 @@ test.describe("assistant http backend", function()
       options.on_done(true, nil, nil, { status = 200 })
     end
 
-    local agent = DeepSeek({ stream = true })
+    local agent = DeepSeek({ stream = true, reasoning_effort = "low" })
     local conversation = Conversation(agent, "project")
     local backend = HttpBackend()
     local reasoning_content
@@ -629,8 +679,27 @@ test.describe("assistant http backend", function()
     test.equal(reasoning_content, "Thinking")
   end)
 
-  test.it("replays reasoning_content on assistant tool-call provider messages", function()
+  test.it("replays reasoning_content on DeepSeek tool calls by default", function()
     local agent = DeepSeek()
+    local calls = {
+      {
+        id = "call_1",
+        name = "read",
+        arguments = { path = "init.lua" },
+        arguments_text = '{"path":"init.lua"}',
+        _assistant_provider_reasoning_content = "private chain"
+      }
+    }
+
+    local provider_message = agent:tool_call_provider_message(calls, 1)
+
+    test.not_nil(provider_message)
+    test.equal(provider_message.role, "assistant")
+    test.equal(provider_message.reasoning_content, "private chain")
+  end)
+
+  test.it("replays reasoning_content on explicit DeepSeek tool-call provider messages", function()
+    local agent = DeepSeek({ reasoning_effort = "low" })
     local calls = {
       {
         id = "call_1",

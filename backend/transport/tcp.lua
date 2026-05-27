@@ -215,10 +215,8 @@ function TcpTransport:write(data)
   end
 
   local written, errmsg = self.socket:write(data)
-  if written then
-    return #data
-  end
-  return nil, errmsg
+  if written == nil then return nil, errmsg end
+  return written
 end
 
 ---Read read.

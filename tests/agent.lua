@@ -5,11 +5,13 @@ local config = require "core.config"
 local json = require "core.json"
 local Conversation = require "plugins.assistant.conversation"
 local Agent = require "plugins.assistant.agent"
+local agent_config = require "plugins.assistant.agent_config"
 local Ollama = require "plugins.assistant.agent.ollama"
 local LlamaCpp = require "plugins.assistant.agent.llamacpp"
 local Lms = require "plugins.assistant.agent.lms"
 local OpenAI = require "plugins.assistant.agent.openai"
 local Anthropic = require "plugins.assistant.agent.anthropic"
+local DeepSeek = require "plugins.assistant.agent.deepseek"
 local DeepSeekAnthropic = require "plugins.assistant.agent.deepseek_anthropic"
 local Acp = require "plugins.assistant.agent.acp"
 local Codex = require "plugins.assistant.agent.codex"
@@ -1484,6 +1486,28 @@ test.describe("assistant agent", function()
     test.equal(incapable.stream, true)
   end)
 
+  test.it("applies configured capability overrides", function()
+    local agent = tools.register_agent_tools(DeepSeek())
+    agent_config.apply(agent, {
+      stream = false,
+      agents = {
+        deepseek = {
+          capabilities = {
+            tool_calling = false
+          }
+        }
+      }
+    })
+
+    local conversation = Conversation(agent, "project")
+    conversation:add("user", "hello", { autosave = false })
+    local payload = agent:build_payload(conversation)
+
+    test.equal(agent:has_capability("tool_calling"), false)
+    test.equal(agent.model_metadata.stream_tool_calls, false)
+    test.equal(payload.tools, nil)
+  end)
+
   test.it("enables streaming capability for compatible agents", function()
     test.equal(Ollama():has_capability("stream_responses"), true)
     test.equal(LlamaCpp():has_capability("stream_responses"), true)
@@ -1516,6 +1540,169 @@ test.describe("assistant agent", function()
     test.equal(OpenAI().model_metadata.context_window > 100000, true)
   end)
 
+  test.it("configures deepseek defaults", function()
+    local agent = DeepSeek()
+    local headers = agent:get_headers()
+
+    test.equal(agent.name, "deepseek")
+    test.equal(agent.display_name, "DeepSeek")
+    test.equal(agent.backend, "http")
+    test.equal(agent.base_url, "https://api.deepseek.com")
+    test.equal(agent.endpoint, "/v1/chat/completions")
+    test.equal(agent.models_endpoint, "/v1/models")
+    test.equal(agent.model, "deepseek-chat")
+    test.equal(agent.api_key_env, "DEEPSEEK_API_KEY")
+    test.equal(agent.default_reasoning_effort, "low")
+    test.equal(agent.model_metadata.context_window, 1048576)
+    test.equal(agent.model_metadata.max_output_tokens, 393216)
+    test.equal(agent.capabilities.reports_usage, true)
+    test.equal(agent.capabilities.stream_responses, true)
+    test.equal(agent.capabilities.tool_calling, true)
+    test.equal(agent.capabilities.local_compact, true)
+    test.equal(agent.capabilities.keep_reasoning_content, false)
+    test.equal(headers["Content-Type"], "application/json")
+  end)
+
+  test.it("uses default deepseek openai reasoning unless explicitly configured", function()
+    local old_reasoning_effort = config.plugins.assistant.reasoning_effort
+    local old_persist_reasoning_content = config.plugins.assistant.persist_reasoning_content
+    config.plugins.assistant.reasoning_effort = "high"
+    config.plugins.assistant.persist_reasoning_content = false
+
+    local agent = DeepSeek()
+    local conversation = Conversation(agent, "/tmp")
+    conversation:add("user", "hello", { autosave = false })
+    local payload = agent:build_payload(conversation)
+    local title_payload = agent:build_title_payload("hello")
+    local persist = agent:should_persist_reasoning_content()
+
+    config.plugins.assistant.reasoning_effort = old_reasoning_effort
+    config.plugins.assistant.persist_reasoning_content = old_persist_reasoning_content
+
+    test.equal(payload.reasoning_effort, "low")
+    test.equal(title_payload.reasoning_effort, "low")
+    test.equal(persist, true)
+  end)
+
+  test.it("builds deepseek openai payloads with explicit reasoning effort", function()
+    local agent = DeepSeek({ reasoning_effort = "low" })
+    local conversation = Conversation(agent, "/tmp")
+    conversation:add("user", "hello", { autosave = false })
+    local payload = agent:build_payload(conversation)
+
+    test.equal(payload.reasoning_effort, "low")
+    test.equal(agent:should_persist_reasoning_content(), true)
+  end)
+
+  test.it("falls back to default deepseek openai reasoning when effort is none", function()
+    local old_persist_reasoning_content = config.plugins.assistant.persist_reasoning_content
+    config.plugins.assistant.persist_reasoning_content = false
+
+    local agent = DeepSeek({ reasoning_effort = "none" })
+    local conversation = Conversation(agent, "/tmp")
+    conversation:add("user", "hello", { autosave = false })
+    local payload = agent:build_payload(conversation)
+    local persist = agent:should_persist_reasoning_content()
+
+    config.plugins.assistant.persist_reasoning_content = old_persist_reasoning_content
+
+    test.equal(payload.reasoning_effort, "low")
+    test.equal(persist, true)
+  end)
+
+  test.it("supports deepseek openai max reasoning efforts", function()
+    local agent = DeepSeek({ reasoning_effort = "xhigh" })
+    local conversation = Conversation(agent, "/tmp")
+    conversation:add("user", "hello", { autosave = false })
+    local payload = agent:build_payload(conversation)
+
+    test.equal(payload.reasoning_effort, "xhigh")
+  end)
+
+  test.it("enables deepseek strict tool validation mode", function()
+    local agent = tools.register_agent_tools(DeepSeek())
+    agent_config.apply(agent, {
+      stream = false,
+      agents = {
+        deepseek = {
+          strict_tools = true
+        }
+      }
+    })
+    local conversation = Conversation(agent, "/tmp")
+    conversation:add("user", "hello", { autosave = false })
+    local payload = agent:build_payload(conversation)
+
+    test.equal(agent.base_url, "https://api.deepseek.com/beta")
+    test.equal(agent.endpoint, "/chat/completions")
+    test.equal(agent.models_endpoint, "/models")
+    test.equal(payload.tools[1]["function"].strict, true)
+  end)
+
+  test.it("normalizes deepseek strict tool schemas", function()
+    local agent = DeepSeek({ strict_tools = true })
+    agent:register_tool("sample", {
+      callback = function() end,
+      params = {
+        { name = "required_value", type = "string" },
+        { name = "optional_value", type = "string", required = false },
+        {
+          name = "mode",
+          type = "string",
+          enum = { "fast", "safe" },
+          required = false
+        },
+        {
+          name = "tags",
+          type = "array",
+          required = false
+        },
+        {
+          name = "headers",
+          type = "object",
+          required = false
+        },
+        {
+          name = "nested",
+          required = false,
+          schema = {
+            type = "object",
+            properties = {
+              name = { type = "string" },
+              note = { type = "string" }
+            },
+            required = { "name" }
+          }
+        }
+      }
+    })
+
+    local schema = agent:generate_tools_info()[1]["function"].parameters
+    test.same(schema.required, { "mode", "nested", "optional_value", "required_value", "tags" })
+    test.equal(schema.additionalProperties, false)
+    test.equal(schema.properties.headers, nil)
+    test.same(schema.properties.optional_value.type, "string")
+    test.same(schema.properties.mode.type, "string")
+    test.same(schema.properties.mode.enum, { "fast", "safe" })
+    test.same(schema.properties.tags.items.type, "string")
+    test.same(schema.properties.nested.type, "object")
+    test.same(schema.properties.nested.required, { "name", "note" })
+    test.equal(schema.properties.nested.additionalProperties, false)
+    test.same(schema.properties.nested.properties.note.type, "string")
+  end)
+
+  test.it("forces deepseek openai reasoning persistence from config", function()
+    local old_persist_reasoning_content = config.plugins.assistant.persist_reasoning_content
+    config.plugins.assistant.persist_reasoning_content = true
+
+    local agent = DeepSeek({ reasoning_effort = "none" })
+    local persist = agent:should_persist_reasoning_content()
+
+    config.plugins.assistant.persist_reasoning_content = old_persist_reasoning_content
+
+    test.equal(persist, true)
+  end)
+
   test.it("configures deepseek anthropic defaults", function()
     local agent = DeepSeekAnthropic()
     local headers = agent:get_headers()
@@ -1530,8 +1717,8 @@ test.describe("assistant agent", function()
     test.equal(agent.api_key_env, "DEEPSEEK_API_KEY")
     test.equal(agent.api_format, "anthropic-messages")
     test.equal(agent.stream_format, "anthropic-sse")
-    test.equal(agent.model_metadata.context_window, 65536)
-    test.equal(agent.model_metadata.max_output_tokens, 8192)
+    test.equal(agent.model_metadata.context_window, 1048576)
+    test.equal(agent.model_metadata.max_output_tokens, 393216)
     test.equal(agent.capabilities.reports_usage, true)
     test.equal(agent.capabilities.stream_responses, true)
     test.equal(agent.capabilities.tool_calling, true)
@@ -1540,7 +1727,7 @@ test.describe("assistant agent", function()
     test.equal(headers["anthropic-version"], "2023-06-01")
   end)
 
-  test.it("builds deepseek anthropic payloads with configured thinking effort", function()
+  test.it("disables deepseek anthropic thinking unless explicitly configured", function()
     local old_reasoning_effort = config.plugins.assistant.reasoning_effort
     config.plugins.assistant.reasoning_effort = "high"
 
@@ -1552,37 +1739,208 @@ test.describe("assistant agent", function()
     config.plugins.assistant.reasoning_effort = old_reasoning_effort
 
     test.equal(payload.model, "deepseek-v4-pro")
+    test.equal(payload.thinking.type, "disabled")
+    test.equal(payload.output_config, nil)
+  end)
+
+  test.it("builds deepseek anthropic payloads with explicit thinking effort", function()
+    local agent = DeepSeekAnthropic({ reasoning_effort = "high" })
+    local conversation = Conversation(agent, "/tmp")
+    conversation:add("user", "hello", { autosave = false })
+    local payload = agent:build_payload(conversation)
+
+    test.equal(payload.model, "deepseek-v4-pro")
     test.equal(payload.thinking.type, "enabled")
     test.equal(payload.thinking.budget_tokens, 1024)
     test.equal(payload.output_config.effort, "high")
   end)
 
-  test.it("disables deepseek anthropic thinking when reasoning effort is none", function()
-    local old_reasoning_effort = config.plugins.assistant.reasoning_effort
-    config.plugins.assistant.reasoning_effort = "none"
-
-    local agent = DeepSeekAnthropic()
+  test.it("disables deepseek anthropic thinking when explicit reasoning effort is none", function()
+    local agent = DeepSeekAnthropic({ reasoning_effort = "none" })
     local conversation = Conversation(agent, "/tmp")
     conversation:add("user", "hello", { autosave = false })
     local payload = agent:build_payload(conversation)
 
-    config.plugins.assistant.reasoning_effort = old_reasoning_effort
+    test.equal(payload.thinking.type, "disabled")
+    test.equal(payload.output_config, nil)
+  end)
+
+  test.it("strips replayed deepseek anthropic thinking unless explicitly configured", function()
+    local agent = DeepSeekAnthropic()
+    local conversation = Conversation(agent, "/tmp")
+    conversation:add("tool_call", "tool", {
+      meta = {
+        provider_message = {
+          role = "assistant",
+          content = {
+            { type = "thinking", thinking = "private", signature = "sig" },
+            { type = "tool_use", id = "call_1", name = "list", input = {} }
+          }
+        }
+      },
+      autosave = false
+    })
+    conversation:add("tool_result", "result", {
+      meta = {
+        provider_messages = {
+          {
+            role = "user",
+            content = {
+              { type = "tool_result", tool_use_id = "call_1", content = "ok" }
+            }
+          }
+        }
+      },
+      autosave = false
+    })
+
+    local payload = agent:build_payload(conversation)
 
     test.equal(payload.thinking.type, "disabled")
-    test.equal(payload.output_config.effort, "none")
+    test.equal(payload.output_config, nil)
+    test.equal(payload.messages[2].content[1].type, "tool_use")
+  end)
+
+  test.it("keeps replayed deepseek anthropic thinking when explicitly configured", function()
+    local agent = DeepSeekAnthropic({ reasoning_effort = "low" })
+    local conversation = Conversation(agent, "/tmp")
+    conversation:add("tool_call", "tool", {
+      meta = {
+        provider_message = {
+          role = "assistant",
+          content = {
+            { type = "thinking", thinking = "private", signature = "sig" },
+            { type = "tool_use", id = "call_1", name = "list", input = {} }
+          }
+        }
+      },
+      autosave = false
+    })
+    conversation:add("tool_result", "result", {
+      meta = {
+        provider_messages = {
+          {
+            role = "user",
+            content = {
+              { type = "tool_result", tool_use_id = "call_1", content = "ok" }
+            }
+          }
+        }
+      },
+      autosave = false
+    })
+
+    local payload = agent:build_payload(conversation)
+
+    test.equal(payload.thinking.type, "enabled")
+    test.equal(payload.output_config.effort, "low")
+    test.equal(payload.messages[2].content[1].type, "thinking")
   end)
 
   test.it("parses anthropic usage objects from stream events", function()
     local usage = Anthropic():parse_usage({
       input_tokens = 10,
       output_tokens = 5,
+      cache_creation_input_tokens = 2,
+      cache_read_input_tokens = 3,
       context = 1000
     })
 
     test.equal(usage.input_tokens, 10)
     test.equal(usage.output_tokens, 5)
-    test.equal(usage.total_tokens, 15)
+    test.equal(usage.cache_creation_input_tokens, 2)
+    test.equal(usage.cache_read_input_tokens, 3)
+    test.equal(usage.total_tokens, 20)
     test.equal(usage.context, 1000)
+  end)
+
+  test.it("replays native anthropic assistant content only once for multi-tool turns", function()
+    local agent = Anthropic()
+    local calls = agent:parse_tool_calls({
+      content = {
+        { type = "thinking", thinking = "private", signature = "sig" },
+        { type = "text", text = "checking" },
+        { type = "tool_use", id = "call_1", name = "list", input = { directory = "." } },
+        { type = "tool_use", id = "call_2", name = "git_status", input = { directory = "." } }
+      }
+    })
+
+    test.equal(#calls, 2)
+    local first = agent:tool_call_provider_message(calls, 1)
+    local second = agent:tool_call_provider_message(calls, 2)
+
+    test.not_nil(first)
+    test.equal(first.role, "assistant")
+    test.equal(#first.content, 4)
+    test.equal(first.content[1].type, "thinking")
+    test.equal(first.content[3].id, "call_1")
+    test.equal(first.content[4].id, "call_2")
+    test.equal(second, nil)
+  end)
+
+  test.it("merges adjacent native anthropic tool results after multi-tool turns", function()
+    local agent = Anthropic()
+    local conversation = Conversation(agent, "/tmp")
+    conversation:add("user", "hello", { autosave = false })
+    conversation:add("tool_call", "list", {
+      meta = {
+        provider_message = {
+          role = "assistant",
+          content = {
+            { type = "text", text = "checking" },
+            { type = "tool_use", id = "call_1", name = "list", input = {} },
+            { type = "tool_use", id = "call_2", name = "git_status", input = {} }
+          }
+        }
+      },
+      autosave = false
+    })
+    conversation:add("tool_result", "list result", {
+      meta = {
+        provider_messages = {
+          {
+            role = "user",
+            content = {
+              { type = "tool_result", tool_use_id = "call_1", content = "files" }
+            }
+          }
+        }
+      },
+      autosave = false
+    })
+    conversation:add("tool_call", "git_status", { autosave = false })
+    conversation:add("tool_result", "git result", {
+      meta = {
+        provider_messages = {
+          {
+            role = "user",
+            content = {
+              { type = "tool_result", tool_use_id = "call_2", content = "clean" }
+            }
+          }
+        }
+      },
+      autosave = false
+    })
+
+    local payload = agent:build_payload(conversation)
+    local assistant_index
+    for index, message in ipairs(payload.messages) do
+      if message.role == "assistant" then
+        assistant_index = index
+        break
+      end
+    end
+
+    test.not_nil(assistant_index)
+    local assistant_message = payload.messages[assistant_index]
+    local result_message = payload.messages[assistant_index + 1]
+    test.equal(assistant_message.role, "assistant")
+    test.equal(#assistant_message.content, 3)
+    test.equal(result_message.role, "user")
+    test.equal(#result_message.content, 2)
+    test.equal(result_message.content[1].tool_use_id, "call_1")
+    test.equal(result_message.content[2].tool_use_id, "call_2")
   end)
 
   test.it("tracks loading state", function()

@@ -124,6 +124,16 @@ local function convert_to_anthropic_format(messages)
   local anthropic_messages = {}
   local pending_tool_calls = {}  -- tool_call_id -> {name, id, arguments}
 
+  local function is_tool_result_blocks(blocks)
+    if type(blocks) ~= "table" or #blocks == 0 then return false end
+    for _, block in ipairs(blocks) do
+      if type(block) ~= "table" or block.type ~= "tool_result" then
+        return false
+      end
+    end
+    return true
+  end
+
   for _, msg in ipairs(messages or {}) do
     local role = msg.role
     local content = msg.content or ""
@@ -143,15 +153,24 @@ local function convert_to_anthropic_format(messages)
       else
         table.insert(blocks, { type = "text", text = tostring(content) })
       end
-      table.insert(anthropic_messages, {
-        role = "user",
-        content = blocks
-      })
+      local last = anthropic_messages[#anthropic_messages]
+      if is_tool_result_blocks(blocks) and last and last.role == "user" then
+        for _, block in ipairs(blocks) do
+          table.insert(last.content, block)
+        end
+      else
+        table.insert(anthropic_messages, {
+          role = "user",
+          content = blocks
+        })
+      end
     -- Assistant messages
     elseif role == "assistant" then
       local blocks = {}
       -- Add text content if present
-      if content and content ~= "" then
+      if type(content) == "table" then
+        blocks = content
+      elseif content and content ~= "" then
         table.insert(blocks, { type = "text", text = tostring(content) })
       end
       -- Add tool_use blocks from tool_calls
@@ -237,6 +256,18 @@ function Anthropic:build_payload(conversation)
   return payload
 end
 
+---Return native Anthropic response content blocks that should be replayed.
+---@param result table|nil
+---@return table[]|nil blocks
+function Anthropic:response_content_blocks(result)
+  if type(result) ~= "table" or type(result.content) ~= "table" then return nil end
+  local blocks = {}
+  for _, block in ipairs(result.content) do
+    if type(block) == "table" then table.insert(blocks, block) end
+  end
+  return #blocks > 0 and blocks or nil
+end
+
 ---Build compact payload.
 ---@param conversation assistant.Conversation
 ---@return table payload
@@ -314,6 +345,7 @@ function Anthropic:parse_tool_calls(result)
   if type(result) ~= "table" then return {} end
   local content = result.content
   if type(content) ~= "table" then return {} end
+  local response_content = self:response_content_blocks(result)
   local calls = {}
   for _, block in ipairs(content) do
     if type(block) == "table" and block.type == "tool_use" and block.name then
@@ -325,7 +357,8 @@ function Anthropic:parse_tool_calls(result)
         arguments = args,
         arguments_text = args_text,
         format = "anthropic",
-        raw = block
+        raw = block,
+        anthropic_content = response_content
       })
     end
   end
@@ -344,11 +377,16 @@ function Anthropic:parse_usage(result)
   if type(usage) ~= "table" then return nil end
   local input = usage.input_tokens
   local output = usage.output_tokens
+  local cache_creation = usage.cache_creation_input_tokens
+  local cache_read = usage.cache_read_input_tokens
   if not (input or output) then return nil end
+  local total_input = (input or 0) + (cache_creation or 0) + (cache_read or 0)
   return {
     input_tokens = input,
     output_tokens = output,
-    total_tokens = (input or 0) + (output or 0),
+    cache_creation_input_tokens = cache_creation,
+    cache_read_input_tokens = cache_read,
+    total_tokens = total_input + (output or 0),
     context = usage.context
   }
 end
@@ -361,6 +399,17 @@ end
 function Anthropic:tool_call_provider_message(calls, index)
   local call = (calls or {})[index or 1]
   if not call then return nil end
+  if type(call.anthropic_content) == "table" and (index or 1) == 1 then
+    return {
+      role = "assistant",
+      content = call.anthropic_content
+    }
+  end
+  if type((calls or {})[1]) == "table"
+    and type((calls or {})[1].anthropic_content) == "table"
+  then
+    return nil
+  end
   local args = call.arguments or {}
   return {
     role = "assistant",

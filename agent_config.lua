@@ -13,6 +13,7 @@ local config = require "core.config"
 ---@field port? integer ACP TCP port.
 ---@field keep_alive? string Provider keep-alive value for capable agents.
 ---@field reasoning_effort? "none"|"low"|"medium"|"high" Agent reasoning effort.
+---@field strict_tools? boolean Enable provider strict tool-schema validation when supported.
 
 local agent_config = {}
 
@@ -273,9 +274,14 @@ end
 function agent_config.resolve(name, conf)
   conf = conf or config.plugins.assistant or {}
   local agents = type(conf.agents) == "table" and conf.agents or {}
-  local resolved = deep_merge(DEFAULTS[name] or {}, type(agents[name]) == "table" and agents[name] or {})
+  local agent_conf = type(agents[name]) == "table" and agents[name] or {}
+  local resolved = deep_merge(DEFAULTS[name] or {}, agent_conf)
+  local has_agent_reasoning = agent_conf.reasoning_effort ~= nil and agent_conf.reasoning_effort ~= ""
   if resolved.reasoning_effort == nil or resolved.reasoning_effort == "" then
     resolved.reasoning_effort = conf.reasoning_effort
+    resolved.reasoning_effort_inherited = true
+  else
+    resolved.reasoning_effort_inherited = not has_agent_reasoning
   end
   resolved.stream = conf.stream
   return resolved
