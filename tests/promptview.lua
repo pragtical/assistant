@@ -985,8 +985,9 @@ test.describe("assistant prompt view", function()
   end)
 
   test.it("shows context used for agents that report usage only", function()
-    local agent = OpenAI({ options = { context = 100 } })
+    local agent = OpenAI({ options = { context = 100000 } })
     local conversation = Conversation(agent, "/tmp")
+    conversation.options.context = nil
     conversation:set_usage({ total_tokens = 35 })
     local view = PromptView({
       agent = agent,
@@ -999,8 +1000,23 @@ test.describe("assistant prompt view", function()
     test.equal(view.status.label:find("35 context used", 1, true) ~= nil, true)
   end)
 
-  test.it("updates context used from backend response usage", function()
+  test.it("shows context left from configured context for usage-only agents", function()
     local agent = OpenAI({ options = { context = 100 } })
+    local conversation = Conversation(agent, "/tmp")
+    conversation:set_usage({ total_tokens = 35 })
+    local view = PromptView({
+      agent = agent,
+      conversation = conversation,
+      backend = {}
+    })
+
+    view:refresh()
+
+    test.equal(view.status.label:find("65 context left", 1, true) ~= nil, true)
+  end)
+
+  test.it("updates context left from backend response usage and configured context", function()
+    local agent = OpenAI({ options = { context = 100000 } })
     local conversation = Conversation(agent, "/tmp")
     local view = PromptView({
       agent = agent,
@@ -1023,7 +1039,7 @@ test.describe("assistant prompt view", function()
     view:submit()
 
     test.equal(conversation:context_used(), 2600)
-    test.equal(view.status.label:find("2600 context used", 1, true) ~= nil, true)
+    test.equal(view.status.label:find("97400 context left", 1, true) ~= nil, true)
   end)
 
   test.it("shows context left for agents that report context", function()

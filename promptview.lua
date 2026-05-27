@@ -781,9 +781,9 @@ function PromptView:refresh_controls()
     model_reasoning_label(self.agent)
   }
   if self.agent:has_capability("reports_usage") then
-    if self.agent:has_capability("reports_context") then
-      local left = self.conversation:context_left()
-      if left then table.insert(parts, string.format("%d context left", left)) end
+    local left = self.conversation:context_left()
+    if left then
+      table.insert(parts, string.format("%d context left", left))
     else
       local used = self.conversation:context_used()
       if used then table.insert(parts, string.format("%d context used", used)) end
