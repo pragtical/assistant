@@ -567,9 +567,10 @@ function Agent:get_mode_instructions(conversation)
       "Use request_user_input only for choices that materially change the plan and cannot be answered from the project.",
       "Do not write implementation code, full source files, patches, or long code blocks in Plan mode; describe intended files, interfaces, behavior, tests, and risks in prose or concise pseudocode only.",
       "When the plan is decision-complete, respond with one Markdown plan that another engineer or agent can implement directly.",
+      "After presenting a decision-complete plan, use implement_plan if available to ask whether to switch to Implementation mode and start the work.",
       "Choose reasonable defaults instead of asking for confirmation when the user's request is clear.",
       "Do not include private reasoning markup in user-visible responses.",
-      "Do not ask whether to proceed in the final plan."
+      "Do not ask whether to proceed in prose."
     }, "\n")
   end
   if mode == "implementation" then

@@ -1057,6 +1057,13 @@ function PromptView:dispatch_prompt_turn(text)
       self:refresh()
       return
     end
+    if ok and meta and meta.event == "implement_plan_request" and meta.request then
+      finalize_pending_assistant()
+      self.active_prompt_turn = false
+      self:handle_implement_plan_request(meta.request)
+      self:refresh()
+      return
+    end
     if ok and meta and meta.event == "finalize_pending_assistant" then
       finalize_pending_assistant()
       self:refresh()
@@ -1201,6 +1208,29 @@ function PromptView:dispatch_prompt_turn(text)
     return
   end
   send_after_optional_compaction()
+end
+
+---Handle implement plan request.
+---@param request table
+function PromptView:handle_implement_plan_request(request)
+  request = request or {}
+  MessageBox.warning(
+    request.title or "Implement Plan?",
+    request.body or "Switch to Implementation mode and start implementing the plan now?",
+    function(_, button_id)
+      if button_id == 1 then
+        self:set_collaboration_mode("implementation")
+        self:dispatch_prompt_turn(request.prompt
+          or "Implement the approved plan now. Use the plan from the conversation above as the implementation specification.")
+      else
+        self.conversation:add("assistant", "Plan implementation was not started.", {
+          meta = { implement_plan_declined = true }
+        })
+      end
+      self:refresh()
+    end,
+    MessageBox.BUTTONS_YES_NO
+  )
 end
 
 ---Handle generate conversation title from first prompt.

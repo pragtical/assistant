@@ -1397,6 +1397,50 @@ test.describe("assistant http backend", function()
     test.equal(second_body.messages[#second_body.messages].content:find("choice", 1, true) ~= nil, true)
   end)
 
+  test.it("emits implement_plan requests in plan mode", function()
+    local old_post = http.post
+    http.post = function(_, _, _, options)
+      options.on_done(true, nil, {
+        choices = {
+          {
+            message = {
+              role = "assistant",
+              content = "## Plan\n\n1. Update the code.\n2. Run tests.",
+              tool_calls = {
+                {
+                  id = "call_implement",
+                  type = "function",
+                  ["function"] = {
+                    name = "implement_plan",
+                    arguments = "{}"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }, { status = 200 })
+    end
+
+    local agent = tools.register_agent_tools(Ollama({ stream = false }))
+    local conversation = Conversation(agent, "project")
+    conversation.collaboration_mode = "plan"
+    local backend = HttpBackend()
+    local requested
+
+    backend:send(agent, conversation, function(ok, _, _, meta)
+      if ok and meta and meta.event == "implement_plan_request" then
+        requested = meta.request
+      end
+    end)
+
+    http.post = old_post
+    test.not_nil(requested)
+    test.equal(requested.title, "Implement Plan?")
+    test.equal(requested.prompt:find("Implement the approved plan", 1, true) ~= nil, true)
+    test.equal(conversation.status, "idle")
+  end)
+
   test.it("streams chat-completions tool calls before final response", function()
     local restore_background_threads = run_background_threads_immediately()
     local old_request = http.request

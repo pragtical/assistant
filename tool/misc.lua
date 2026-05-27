@@ -72,6 +72,7 @@ function misctools.tool_catalog(category, selected_names)
     },
     interaction = {
       { "request_user_input", "request_user_input(questions) - ask the user structured questions" },
+      { "implement_plan", "implement_plan() - ask whether to switch from Plan mode to Implementation mode and start implementing" },
       { "update_plan", "update_plan(explanation?, plan) - update the visible task plan" },
       { "time", "time(utc_offset?) - return current system time" }
     }
@@ -152,6 +153,13 @@ end
 ---@return string result
 function misctools.request_user_input()
   return false, "request_user_input must be resolved by the assistant UI"
+end
+
+---Placeholder callback resolved by the assistant UI plan handoff flow.
+---@return boolean ok
+---@return string result
+function misctools.implement_plan()
+  return false, "implement_plan must be resolved by the assistant UI"
 end
 
 misctools.tools = {
@@ -252,6 +260,20 @@ misctools.tools = {
         }
       }
     }
+  }),
+  Tool:new({
+    name = "implement_plan",
+    callback = misctools.implement_plan,
+    description = table.concat({
+      "Ask the user whether the completed plan should be implemented now.",
+      "Use this only in Plan mode after presenting a decision-complete plan.",
+      "When the user accepts, the assistant switches to Implementation mode and starts implementing the plan automatically."
+    }, "\n"),
+    read_only = true,
+    params = {},
+    compact_activity_markdown = function(_, status)
+      return "**Implement plan**:" .. Tool.status_suffix(status)
+    end
   })
 }
 

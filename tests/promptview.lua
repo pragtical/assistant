@@ -2278,6 +2278,48 @@ test.describe("assistant prompt view", function()
     test.equal(resolved.decision, "accept")
   end)
 
+  test.it("switches to implementation mode when implement_plan is accepted", function()
+    local old_warning = MessageBox.warning
+    MessageBox.warning = function(title, body, callback)
+      test.equal(title, "Implement Plan?")
+      test.equal(body:find("start implementing", 1, true) ~= nil, true)
+      callback(nil, 1)
+    end
+
+    local agent = Ollama()
+    local conversation = Conversation(agent, "/tmp")
+    conversation.collaboration_mode = "plan"
+    local sent
+    local view = PromptView({
+      agent = agent,
+      conversation = conversation,
+      backend = {
+        send = function(_, got_agent, got_conversation, callback)
+          sent = {
+            agent = got_agent,
+            conversation = got_conversation
+          }
+          callback(true, nil, "done", { done = true })
+        end
+      }
+    })
+
+    view:handle_implement_plan_request({
+      title = "Implement Plan?",
+      body = "Switch modes and start implementing?",
+      prompt = "Implement this approved plan."
+    })
+
+    MessageBox.warning = old_warning
+    test.equal(conversation.collaboration_mode, "implementation")
+    test.equal(sent.agent, agent)
+    test.equal(sent.conversation, conversation)
+    test.equal(conversation.messages[#conversation.messages - 1].role, "user")
+    test.equal(conversation.messages[#conversation.messages - 1].message, "Implement this approved plan.")
+    test.equal(conversation.messages[#conversation.messages].role, "assistant")
+    test.equal(conversation.messages[#conversation.messages].message, "done")
+  end)
+
   test.it("resolves burst approval dialogs against their original requests", function()
     local old_warning = MessageBox.warning
     local callbacks = {}

@@ -835,6 +835,15 @@ local function tool_allowed_for_mode(agent, conversation, name)
   return false
 end
 
+---Return whether a tool call list includes a resolved tool name.
+local function calls_include_tool(agent, calls, name)
+  for _, call in ipairs(calls or {}) do
+    local resolved = agent and agent.resolve_tool_name and agent:resolve_tool_name(call and call.name) or (call and call.name)
+    if resolved == name then return true end
+  end
+  return false
+end
+
 ---Handle plan mode tool block reason.
 local function plan_mode_tool_block_reason(call)
 end
@@ -1070,7 +1079,7 @@ function AnthropicBackend:send(agent, conversation, callback)
   end
 
   ---Handle finish.
-  local function finish(text, info, final_usage)
+  local function finish(text, info, final_usage, finish_meta)
     self.pending_tool_call = nil
     self.pending_user_input_tool = nil
     self:finish_request()
@@ -1079,7 +1088,12 @@ function AnthropicBackend:send(agent, conversation, callback)
     if is_plan_mode(agent, conversation) then
       text = sanitize_plan_response(text)
     end
-    callback(true, nil, text or "", { done = true, info = info, usage = final_usage })
+    local meta = common.merge({
+      done = true,
+      info = info,
+      usage = final_usage
+    }, finish_meta or {})
+    callback(true, nil, text or "", meta)
     compact_after_done()
   end
 
@@ -1106,7 +1120,7 @@ function AnthropicBackend:send(agent, conversation, callback)
   local post_once
   ---Handle request tool approval.
   local function request_tool_approval(calls, round, defer_continuation)
-    if finish_plan_if_complete() then return end
+    if not calls_include_tool(agent, calls, "implement_plan") and finish_plan_if_complete() then return end
     local max_rounds = max_tool_call_rounds()
     if max_rounds and round >= max_rounds then
       fail(string.format(
@@ -1157,6 +1171,20 @@ function AnthropicBackend:send(agent, conversation, callback)
       local plan_block_reason = is_plan_mode(agent, conversation) and plan_mode_tool_block_reason(call)
       if plan_block_reason then
         finish_blocked_plan_tool(call, plan_block_reason)
+        return
+      end
+      if resolved_name == "implement_plan" then
+        add_tool_activity(agent, conversation, call, "waiting for confirmation")
+        notify_activity_update({ force_transcript = true })
+        finish("", nil, usage, {
+          event = "implement_plan_request",
+          request = {
+            id = call.id or call.call_id or tostring(index),
+            title = "Implement Plan?",
+            body = "The assistant has finished planning. Switch to Implementation mode and start implementing the plan now?",
+            prompt = "Implement the approved plan now. Use the plan from the conversation above as the implementation specification."
+          }
+        })
         return
       end
       if resolved_name == "update_plan" then

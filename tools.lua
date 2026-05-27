@@ -61,6 +61,7 @@ tools.time = misc.time
 tools.tool_catalog = misc.tool_catalog
 tools.update_plan = misc.update_plan
 tools.request_user_input = misc.request_user_input
+tools.implement_plan = misc.implement_plan
 
 ---Register an external assistant tool.
 ---@param name string
