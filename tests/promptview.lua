@@ -1682,6 +1682,58 @@ test.describe("assistant prompt view", function()
     test.equal(view.active_prompt_turn, false)
   end)
 
+  test.it("sends a new prompt immediately after cancellation while backend unwinds", function()
+    local agent = Codex()
+    local callbacks = {}
+    local send_count = 0
+    local cancel_count = 0
+    local finish_count = 0
+    local function non_system_messages(conversation)
+      local messages = {}
+      for _, message in ipairs(conversation.messages or {}) do
+        if message.role ~= "system" and not (message.meta and message.meta.provider_only) then
+          table.insert(messages, message)
+        end
+      end
+      return messages
+    end
+    local view = PromptView({
+      agent = agent,
+      conversation = Conversation(agent, "/tmp"),
+      backend = {
+        send = function(_, got_agent, _, cb)
+          send_count = send_count + 1
+          got_agent:set_loading(true)
+          callbacks[send_count] = cb
+        end,
+        cancel = function()
+          cancel_count = cancel_count + 1
+        end,
+        finish_request = function()
+          finish_count = finish_count + 1
+        end
+      }
+    })
+
+    view.prompt_doc:insert(1, 1, "first")
+    view:submit()
+    view:cancel()
+    view.prompt_doc:insert(1, 1, "second")
+    view:submit()
+
+    test.equal(cancel_count, 1)
+    test.equal(finish_count, 1)
+    test.equal(send_count, 2)
+    test.equal(#view.prompt_queue, 0)
+
+    callbacks[1](true, nil, "late first response", { done = true })
+
+    local messages = non_system_messages(view.conversation)
+    test.equal(messages[1].message, "first")
+    test.equal(messages[2].message, "second")
+    test.equal(messages[3], nil)
+  end)
+
   test.it("does not add assistant placeholder before provider output", function()
     local agent = Codex()
     local view = PromptView({

@@ -1614,6 +1614,8 @@ end
 ---Cancel the active operation.
 function PromptView:cancel()
   if self.backend then self.backend:cancel() end
+  if self.backend and self.backend.finish_request then self.backend:finish_request() end
+  if self.agent and self.agent.set_loading then self.agent:set_loading(false) end
   self.submit_generation = (self.submit_generation or 0) + 1
   self.conversation:set_status("cancelled")
   self.pending_assistant = nil

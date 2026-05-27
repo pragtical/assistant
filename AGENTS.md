@@ -160,3 +160,11 @@ Before finishing behavior changes:
 
 Keep edits scoped and preserve Lua annotations when changing public plugin
 interfaces.
+
+## Rules When Performing a GIT Commit
+
+- When creating commits, follow standard Git message lengths: keep the subject
+  short, preferably 50 characters or less, and wrap body lines at 72 characters.
+  For multi-line commit messages, write the message to a temporary file and use
+  `git commit -F <file>` instead of repeated `-m` arguments, so wrapping can be
+  checked before committing.
