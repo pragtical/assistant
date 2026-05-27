@@ -338,6 +338,9 @@ end
 function Anthropic:parse_usage(result)
   if type(result) ~= "table" then return nil end
   local usage = result.usage
+  if usage == nil and (result.input_tokens or result.output_tokens) then
+    usage = result
+  end
   if type(usage) ~= "table" then return nil end
   local input = usage.input_tokens
   local output = usage.output_tokens

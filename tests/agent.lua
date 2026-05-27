@@ -9,6 +9,8 @@ local Ollama = require "plugins.assistant.agent.ollama"
 local LlamaCpp = require "plugins.assistant.agent.llamacpp"
 local Lms = require "plugins.assistant.agent.lms"
 local OpenAI = require "plugins.assistant.agent.openai"
+local Anthropic = require "plugins.assistant.agent.anthropic"
+local DeepSeekAnthropic = require "plugins.assistant.agent.deepseek_anthropic"
 local Acp = require "plugins.assistant.agent.acp"
 local Codex = require "plugins.assistant.agent.codex"
 local Tool = require "plugins.assistant.tool"
@@ -1512,6 +1514,75 @@ test.describe("assistant agent", function()
     test.equal(Ollama().model_metadata.reports_usage, true)
     test.equal(OpenAI().model_metadata.preferred_timeout_ms, 300000)
     test.equal(OpenAI().model_metadata.context_window > 100000, true)
+  end)
+
+  test.it("configures deepseek anthropic defaults", function()
+    local agent = DeepSeekAnthropic()
+    local headers = agent:get_headers()
+
+    test.equal(agent.name, "deepseek_anthropic")
+    test.equal(agent.display_name, "DeepSeek Anthropic")
+    test.equal(agent.backend, "anthropic")
+    test.equal(agent.base_url, "https://api.deepseek.com/anthropic")
+    test.equal(agent.endpoint, "/v1/messages")
+    test.equal(agent.models_endpoint, "/v1/models")
+    test.equal(agent.model, "deepseek-v4-pro")
+    test.equal(agent.api_key_env, "DEEPSEEK_API_KEY")
+    test.equal(agent.api_format, "anthropic-messages")
+    test.equal(agent.stream_format, "anthropic-sse")
+    test.equal(agent.model_metadata.context_window, 65536)
+    test.equal(agent.model_metadata.max_output_tokens, 8192)
+    test.equal(agent.capabilities.reports_usage, true)
+    test.equal(agent.capabilities.stream_responses, true)
+    test.equal(agent.capabilities.tool_calling, true)
+    test.equal(agent.capabilities.local_compact, true)
+    test.equal(headers["Content-Type"], "application/json")
+    test.equal(headers["anthropic-version"], "2023-06-01")
+  end)
+
+  test.it("builds deepseek anthropic payloads with configured thinking effort", function()
+    local old_reasoning_effort = config.plugins.assistant.reasoning_effort
+    config.plugins.assistant.reasoning_effort = "high"
+
+    local agent = DeepSeekAnthropic()
+    local conversation = Conversation(agent, "/tmp")
+    conversation:add("user", "hello", { autosave = false })
+    local payload = agent:build_payload(conversation)
+
+    config.plugins.assistant.reasoning_effort = old_reasoning_effort
+
+    test.equal(payload.model, "deepseek-v4-pro")
+    test.equal(payload.thinking.type, "enabled")
+    test.equal(payload.thinking.budget_tokens, 1024)
+    test.equal(payload.output_config.effort, "high")
+  end)
+
+  test.it("disables deepseek anthropic thinking when reasoning effort is none", function()
+    local old_reasoning_effort = config.plugins.assistant.reasoning_effort
+    config.plugins.assistant.reasoning_effort = "none"
+
+    local agent = DeepSeekAnthropic()
+    local conversation = Conversation(agent, "/tmp")
+    conversation:add("user", "hello", { autosave = false })
+    local payload = agent:build_payload(conversation)
+
+    config.plugins.assistant.reasoning_effort = old_reasoning_effort
+
+    test.equal(payload.thinking.type, "disabled")
+    test.equal(payload.output_config.effort, "none")
+  end)
+
+  test.it("parses anthropic usage objects from stream events", function()
+    local usage = Anthropic():parse_usage({
+      input_tokens = 10,
+      output_tokens = 5,
+      context = 1000
+    })
+
+    test.equal(usage.input_tokens, 10)
+    test.equal(usage.output_tokens, 5)
+    test.equal(usage.total_tokens, 15)
+    test.equal(usage.context, 1000)
   end)
 
   test.it("tracks loading state", function()

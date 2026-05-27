@@ -25,6 +25,7 @@ local Acp = require "plugins.assistant.agent.acp"
 local Copilot = require "plugins.assistant.agent.copilot"
 local Anthropic = require "plugins.assistant.agent.anthropic"
 local DeepSeek = require "plugins.assistant.agent.deepseek"
+local DeepSeekAnthropic = require "plugins.assistant.agent.deepseek_anthropic"
 
 config.plugins.assistant = common.merge({
   agent = "ollama",
@@ -78,7 +79,8 @@ config.plugins.assistant = common.merge({
         { "ACP", "acp" },
         { "GitHub Copilot", "copilot" },
         { "Anthropic", "anthropic" },
-        { "DeepSeek", "deepseek" }
+        { "DeepSeek", "deepseek" },
+        { "DeepSeek Anthropic", "deepseek_anthropic" }
       }
     },
     {
@@ -650,6 +652,7 @@ assistant.register_agent("acp", Acp)
 assistant.register_agent("copilot", Copilot)
 assistant.register_agent("anthropic", Anthropic)
 assistant.register_agent("deepseek", DeepSeek)
+assistant.register_agent("deepseek_anthropic", DeepSeekAnthropic)
 assistant.register_backend("http", HttpBackend)
 assistant.register_backend("anthropic", AnthropicBackend)
 assistant.register_backend("cli", CliBackend)

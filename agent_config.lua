@@ -67,6 +67,11 @@ local DEFAULTS = {
     model = "deepseek-chat",
     base_url = "https://api.deepseek.com",
     api_key_env = "DEEPSEEK_API_KEY"
+  },
+  deepseek_anthropic = {
+    model = "deepseek-v4-pro",
+    base_url = "https://api.deepseek.com/anthropic",
+    api_key_env = "DEEPSEEK_API_KEY"
   }
 }
 
@@ -161,6 +166,17 @@ local AGENT_SPECS = {
       { label = "Model", path = "model", type = "string", default = DEFAULTS.deepseek.model },
       { label = "Base URL", path = "base_url", type = "string", default = DEFAULTS.deepseek.base_url },
       { label = "API Key Environment", path = "api_key_env", type = "string", default = DEFAULTS.deepseek.api_key_env },
+      { label = "API Key", path = "api_key", type = "string" },
+      { label = "Reasoning Effort", path = "reasoning_effort", type = "selection", values = REASONING_EFFORT_VALUES }
+    }
+  },
+  {
+    key = "deepseek_anthropic",
+    name = "DeepSeek Anthropic",
+    fields = {
+      { label = "Model", path = "model", type = "string", default = DEFAULTS.deepseek_anthropic.model },
+      { label = "Base URL", path = "base_url", type = "string", default = DEFAULTS.deepseek_anthropic.base_url },
+      { label = "API Key Environment", path = "api_key_env", type = "string", default = DEFAULTS.deepseek_anthropic.api_key_env },
       { label = "API Key", path = "api_key", type = "string" },
       { label = "Reasoning Effort", path = "reasoning_effort", type = "selection", values = REASONING_EFFORT_VALUES }
     }

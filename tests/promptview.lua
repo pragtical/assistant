@@ -13,6 +13,7 @@ local Codex = require "plugins.assistant.agent.codex"
 local Copilot = require "plugins.assistant.agent.copilot"
 local Anthropic = require "plugins.assistant.agent.anthropic"
 local DeepSeek = require "plugins.assistant.agent.deepseek"
+local DeepSeekAnthropic = require "plugins.assistant.agent.deepseek_anthropic"
 local AcpBackend = require "plugins.assistant.backend.acp"
 local AnthropicBackend = require "plugins.assistant.backend.anthropic"
 local HttpBackend = require "plugins.assistant.backend.http"
@@ -155,6 +156,29 @@ test.describe("assistant prompt view", function()
     test.equal(restored.conversation.agent, "deepseek")
     test.equal(restored.conversation.backend, "http")
     test.equal(restored.backend:is(HttpBackend), true)
+  end)
+
+  test.it("restores deepseek anthropic conversations with the Anthropic backend", function()
+    local old_agent = config.plugins.assistant.agent
+    config.plugins.assistant.agent = "ollama"
+
+    local agent = DeepSeekAnthropic()
+    local conversation = Conversation(agent, "/tmp")
+    conversation:add("user", "hello", { autosave = false })
+    test.equal(conversation:save(), true)
+
+    local restored = PromptView.from_state({
+      id = conversation.id,
+      project_dir = conversation.project_dir
+    })
+
+    config.plugins.assistant.agent = old_agent
+
+    test.not_nil(restored)
+    test.equal(restored.agent.name, "deepseek_anthropic")
+    test.equal(restored.conversation.agent, "deepseek_anthropic")
+    test.equal(restored.conversation.backend, "anthropic")
+    test.equal(restored.backend:is(AnthropicBackend), true)
   end)
 
   test.it("restores externally registered agents through prompt view registration", function()
