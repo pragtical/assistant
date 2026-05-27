@@ -5,6 +5,7 @@ local process = require "plugins.assistant.tool.process"
 local web = require "plugins.assistant.tool.web"
 local git = require "plugins.assistant.tool.git"
 local misc = require "plugins.assistant.tool.misc"
+local memory = require "plugins.assistant.tool.memory"
 local Tool = require "plugins.assistant.tool"
 
 ---Facade and registry for assistant tools.
@@ -20,7 +21,8 @@ local modules = {
   applypatch,
   process,
   web,
-  git
+  git,
+  memory
 }
 local external_tools = {}
 
@@ -50,6 +52,10 @@ tools.web_find = web.web_find
 
 tools.git_status = git.git_status
 tools.git_diff = git.git_diff
+
+tools.search_memory = memory.search_memory
+tools.remember = memory.remember
+tools.forget = memory.forget
 
 tools.time = misc.time
 tools.tool_catalog = misc.tool_catalog

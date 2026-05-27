@@ -558,7 +558,8 @@ function Agent:get_mode_instructions(conversation)
   if mode == "plan" then
     return table.concat({
       "Collaboration mode: Plan.",
-      "In this mode, do not create, edit, delete, patch, format, build, install, or otherwise mutate project files or state.",
+      "In this mode, do not create, edit, delete, patch, format, build, install, or otherwise mutate project files.",
+      "Durable assistant memory updates may be made only when appropriate and after approval.",
       "You may use read-only terminal inspection commands when the plan depends on local environment details.",
       "Do not ask the user before using clearly read-only inspection commands such as `ls`, `pwd`, `git status`, `find`, `stat`, or `pkg-config --exists`.",
       "Do not imply that you are implementing now; phrase the response as a plan for later implementation.",
@@ -901,7 +902,11 @@ function Agent:build_context_fragments(project_dir, project_instructions, memori
         "You are Pragma, a coding assistant working in the project at `" .. project_dir .. "`.",
         "Help the user inspect, modify, and verify code in this project.",
         "Be precise, practical, and oriented toward changes that fit the existing codebase.",
-        "Use project context and available tools when needed. Explain important decisions clearly."
+        "Use project context and available tools when needed. Explain important decisions clearly.",
+        "Project memories are durable notes for this project: use search_memory before updating or deleting a memory when you do not know its id.",
+        "Use remember only for stable user preferences, project conventions, durable decisions, or recurring facts that should affect future sessions.",
+        "Do not store secrets, transient command output, one-off task state, or facts already obvious from project files.",
+        "Use forget when the user says a memory is wrong, obsolete, superseded, or no longer applicable."
       }, "\n")
     },
     {

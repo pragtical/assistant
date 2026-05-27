@@ -65,13 +65,18 @@ function misctools.tool_catalog(category, selected_names)
       { "git_status", "git_status(directory) - show git status" },
       { "git_diff", "git_diff(directory, pathspec) - show git diff" }
     },
+    memory = {
+      { "search_memory", "search_memory(query?) - search or list project-local assistant memories" },
+      { "remember", "remember(id?, title?, value?) - create/update a durable memory, or retrieve full content when only id is provided" },
+      { "forget", "forget(id) - delete an exact memory id when it is wrong, obsolete, superseded, or no longer applicable" }
+    },
     interaction = {
       { "request_user_input", "request_user_input(questions) - ask the user structured questions" },
       { "update_plan", "update_plan(explanation?, plan) - update the visible task plan" },
       { "time", "time(utc_offset?) - return current system time" }
     }
   }
-  local order = { "web", "files", "edit", "shell", "git", "interaction" }
+  local order = { "web", "files", "edit", "shell", "git", "memory", "interaction" }
   local lines = {
     "Available assistant tools are grouped below."
   }
@@ -163,7 +168,7 @@ misctools.tools = {
     description = "List available assistant tool groups and tool names when a needed tool schema is not currently visible.",
     read_only = true,
     params = {
-      { name = "category", description = "Optional category: web, files, edit, shell, git, interaction.", type = "string", required = false }
+      { name = "category", description = "Optional category: web, files, edit, shell, git, memory, interaction.", type = "string", required = false }
     }
   }),
   Tool:new({

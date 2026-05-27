@@ -4,6 +4,8 @@ local common = require "core.common"
 local config = require "core.config"
 local http = require "core.http"
 local json = require "core.json"
+local Conversation = require "plugins.assistant.conversation"
+local Agent = require "plugins.assistant.agent"
 local tool_context = require "plugins.assistant.tool_context"
 local tools = require "plugins.assistant.tools"
 local Ollama = require "plugins.assistant.agent.ollama"
@@ -39,6 +41,13 @@ local function system_base64(path)
   local ok = handle:close()
   test.ok(ok, "system base64 command failed")
   return output
+end
+
+local function has_value(values, target)
+  for _, value in ipairs(values or {}) do
+    if value == target then return true end
+  end
+  return false
 end
 
 test.describe("assistant tools", function()
@@ -180,6 +189,119 @@ test.describe("assistant tools", function()
 
   test.it("reads project files", function()
     test.equal(read_fixture(root .. PATHSEP .. "sample.txt"), "alpha\nbeta\n")
+  end)
+
+  test.it("creates, searches, retrieves, updates, and forgets memories", function()
+    local ok, result = tools.remember(nil, "Style", "Prefer small focused patches.")
+    test.ok(ok, result)
+    test.equal(result:find("Memory created", 1, true) ~= nil, true)
+
+    local memories = Conversation.list_memories(root)
+    test.equal(#memories, 1)
+    local id = memories[1].id
+    test.equal(memories[1].title, "Style")
+    test.equal(memories[1].content, "Prefer small focused patches.")
+
+    ok, result = tools.search_memory("focused")
+    test.ok(ok, result)
+    test.equal(result:find("id: " .. id, 1, true) ~= nil, true)
+    test.equal(result:find("title: Style", 1, true) ~= nil, true)
+
+    ok, result = tools.remember(id)
+    test.ok(ok, result)
+    test.equal(result:find("Prefer small focused patches.", 1, true) ~= nil, true)
+
+    ok, result = tools.remember(id, "Style Updated", "Prefer small, tested patches.")
+    test.ok(ok, result)
+    memories = Conversation.list_memories(root)
+    test.equal(memories[1].title, "Style Updated")
+    test.equal(memories[1].content, "Prefer small, tested patches.")
+
+    ok, result = tools.forget(id)
+    test.ok(ok, result)
+    test.equal(result:find("Memory deleted", 1, true) ~= nil, true)
+    test.equal(#Conversation.list_memories(root), 0)
+  end)
+
+  test.it("exposes memory tools in all collaboration modes", function()
+    local agent = tools.register_agent_tools(Ollama())
+    local conversation = Conversation(agent, root)
+
+    conversation.collaboration_mode = "plan"
+    local plan_names = agent:tool_names_for_mode(conversation)
+    test.equal(has_value(plan_names, "search_memory"), true)
+    test.equal(has_value(plan_names, "remember"), true)
+    test.equal(has_value(plan_names, "forget"), true)
+
+    conversation.collaboration_mode = "implementation"
+    local implementation_names = agent:tool_names_for_mode(conversation)
+    test.equal(has_value(implementation_names, "search_memory"), true)
+    test.equal(has_value(implementation_names, "remember"), true)
+    test.equal(has_value(implementation_names, "forget"), true)
+  end)
+
+  test.it("classifies memory tool approvals by mutation", function()
+    local agent = tools.register_agent_tools(Agent({
+      capabilities = {
+        tool_calling = true
+      }
+    }))
+
+    test.equal(agent:tool_requires_approval({
+      name = "search_memory",
+      arguments = {}
+    }), false)
+    test.equal(agent:tool_requires_approval({
+      name = "remember",
+      arguments = { id = "mem_1" }
+    }), false)
+    test.equal(agent:tool_requires_approval({
+      name = "remember",
+      arguments = { title = "Prefs", value = "Use local tools." }
+    }), true)
+    test.equal(agent:tool_requires_approval({
+      name = "remember",
+      arguments = { id = "mem_1", value = "Use local tools." }
+    }), true)
+    test.equal(agent:tool_requires_approval({
+      name = "forget",
+      arguments = { id = "mem_1" }
+    }), true)
+  end)
+
+  test.it("refreshes active conversation context after memory mutations", function()
+    local agent = tools.register_agent_tools(Ollama())
+    local conversation = Conversation(agent, root)
+
+    local ok, result = tool_context.with_active_conversation(conversation, function()
+      return tools.remember(nil, "Workflow", "Keep memory context fresh.", agent)
+    end)
+
+    test.ok(ok, result)
+    test.equal(#conversation.memories, 1)
+    test.equal(conversation.memories[1].title, "Workflow")
+    test.equal(conversation.messages[1].message:find("Workflow: Keep memory context fresh.", 1, true) ~= nil, true)
+  end)
+
+  test.it("yields while searching many memories", function()
+    for index = 1, 60 do
+      local ok, result = tools.remember(nil, "Memory " .. index, "content " .. index)
+      test.ok(ok, result)
+    end
+
+    local co = coroutine.create(function()
+      return tools.search_memory("")
+    end)
+    local ok = coroutine.resume(co)
+    test.ok(ok)
+    test.equal(coroutine.status(co), "suspended")
+    local search_ok, result
+    repeat
+      ok, search_ok, result = coroutine.resume(co)
+      test.ok(ok)
+    until coroutine.status(co) == "dead"
+    test.equal(search_ok, true)
+    test.equal(result:find("Found 60 project memories", 1, true) ~= nil, true)
   end)
 
   test.it("reads project files with offset and limit", function()
