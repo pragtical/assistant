@@ -399,7 +399,7 @@ end
 ---Handle defer until idle.
 local function defer_until_idle(self, callback, timeout)
   timeout = timeout or 30
-  core.add_thread(function()
+  core.add_background_thread(function()
     local started = system.get_time()
     while self.active and system.get_time() - started < timeout do
       coroutine.yield(0.05)
@@ -452,7 +452,7 @@ local function wait_for_response(self, agent, method, params, callback, parse_re
     return
   end
 
-  core.add_thread(function()
+  core.add_background_thread(function()
     local buffer = ""
     local state = {
       pending = {},
@@ -585,7 +585,7 @@ function AppServerBackend:prepare(agent, conversation, callback)
     return
   end
 
-  core.add_thread(function()
+  core.add_background_thread(function()
     local buffer = ""
     local stderr = {}
     local state = {
@@ -1114,7 +1114,7 @@ function AppServerBackend:send(agent, conversation, callback)
     return
   end
 
-  core.add_thread(function()
+  core.add_background_thread(function()
     local buffer = ""
     local stderr = {}
     local state = {
@@ -1357,7 +1357,7 @@ function AppServerBackend:list_models(agent, callback)
     return
   end
 
-  core.add_thread(function()
+  core.add_background_thread(function()
     local buffer = ""
     local state = {
       pending = {},
@@ -1470,7 +1470,7 @@ function AppServerBackend:compact(agent, conversation, callback)
     return
   end
 
-  core.add_thread(function()
+  core.add_background_thread(function()
     local buffer = ""
     local stderr = {}
     local state = {
@@ -1571,7 +1571,7 @@ function AppServerBackend:rename_conversation(agent, conversation, title, callba
     return
   end
 
-  core.add_thread(function()
+  core.add_background_thread(function()
     local buffer = ""
     local stderr = {}
     local state = { pending = {}, responses = {}, error = nil }

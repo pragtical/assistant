@@ -93,7 +93,7 @@ function CliBackend:send(agent, conversation, callback)
     return
   end
 
-  core.add_thread(function()
+  core.add_background_thread(function()
     local stdout = ""
     local stderr = {}
     local state = { response = "" }

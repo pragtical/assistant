@@ -2375,6 +2375,78 @@ test.describe("assistant http backend", function()
     test.equal(conversation.messages[#conversation.messages].message:find("user denied", 1, true) ~= nil, true)
   end)
 
+  test.it("resumes rejected tool calls on a background thread", function()
+    local old_add_background_thread = core.add_background_thread
+    local old_add_thread = core.add_thread
+    local old_post = http.post
+    local background_resumes = 0
+    core.add_background_thread = function(fn)
+      background_resumes = background_resumes + 1
+      fn()
+      return "test-background-thread"
+    end
+    core.add_thread = function()
+      error("tool continuation should not use core.add_thread")
+    end
+    local calls = 0
+    http.post = function(_, _, _, options)
+      calls = calls + 1
+      if calls == 1 then
+        options.on_done(true, nil, {
+          choices = {
+            {
+              message = {
+                tool_calls = {
+                  {
+                    id = "call_1",
+                    type = "function",
+                    ["function"] = {
+                      name = "read",
+                      arguments = '{"path":"README.md"}'
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }, { status = 200 })
+      else
+        options.on_done(true, nil, {
+          choices = {
+            { message = { content = "denied noted" } }
+          }
+        }, { status = 200 })
+      end
+    end
+
+    local agent = Ollama({ stream = false })
+    agent:register_tool("read", {
+      callback = function()
+        return "file contents"
+      end,
+      params = {
+        { name = "path", type = "string" }
+      }
+    })
+    local conversation = Conversation(agent, "project")
+    local backend = HttpBackend()
+    local response
+
+    backend:send(agent, conversation, function(ok, _, text, meta)
+      if ok and meta and meta.event == "tool_call_request" then
+        backend:resolve_tool_call(agent, conversation, meta.request, "deny", function() end)
+      elseif ok and meta and meta.done then
+        response = text
+      end
+    end)
+
+    core.add_background_thread = old_add_background_thread
+    core.add_thread = old_add_thread
+    http.post = old_post
+    test.equal(background_resumes, 1)
+    test.equal(response, "denied noted")
+  end)
+
   test.it("executes approved text-encoded local model tool calls", function()
     local restore_background_threads = run_background_threads_immediately()
     local old_post = http.post

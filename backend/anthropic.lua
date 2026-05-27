@@ -434,10 +434,10 @@ local function add_tool_activity(agent, conversation, call, status, result)
   add_activity(conversation, verbose, "tool:" .. tostring(name) .. ":" .. tostring(status or "pending") .. ":" .. tostring(id), compact)
 end
 
----Handle resume on main thread.
-local function resume_on_main_thread(pending)
+---Resume a pending backend continuation without depending on editor focus.
+local function resume_in_background(pending)
   if not (pending and pending.resume) then return end
-  core.add_thread(function()
+  core.add_background_thread(function()
     pending.resume()
   end)
 end
@@ -1227,7 +1227,7 @@ function AnthropicBackend:send(agent, conversation, callback)
           ask_next()
         end
         if defer_continuation then
-          resume_on_main_thread({ resume = continue })
+          resume_in_background({ resume = continue })
         else
           continue()
         end
@@ -1787,7 +1787,7 @@ function AnthropicBackend:resolve_tool_call(agent, conversation, request, decisi
     add_tool_activity(agent, conversation, call, "denied", result)
     add_tool_result(agent, conversation, call, result, "error")
     if callback then callback(true) end
-    resume_on_main_thread(pending)
+    resume_in_background(pending)
     return
   end
 
@@ -1848,7 +1848,7 @@ function AnthropicBackend:resolve_tool_call(agent, conversation, request, decisi
     add_tool_result(agent, conversation, call, result, ok and "ok" or "error")
     conversation:set_status("working", { autosave = false })
     if callback then callback(true) end
-    resume_on_main_thread(pending)
+    resume_in_background(pending)
   end)
 end
 

@@ -1238,7 +1238,7 @@ function AcpBackend:send(agent, conversation, callback)
     callback(false, errmsg or "could not start ACP agent")
     return
   end
-  core.add_thread(function()
+  core.add_background_thread(function()
     local buffer = ""
     local stderr = {}
     local state = {
@@ -1511,7 +1511,7 @@ function AcpBackend:list_models(agent, callback)
     return
   end
 
-  core.add_thread(function()
+  core.add_background_thread(function()
     local buffer = ""
     local state = {
       pending = {},
