@@ -1818,6 +1818,50 @@ test.describe("assistant prompt view", function()
     test.equal(view.conversation:to_markdown():find("## Assistant", 1, true), nil)
   end)
 
+  test.it("renders streamed reasoning activity as partial text", function()
+    local agent = Codex()
+    local callback
+    local conversation = Conversation(agent, "/tmp")
+    local view = PromptView({
+      agent = agent,
+      conversation = conversation,
+      backend = {
+        send = function(_, _, _, cb)
+          callback = cb
+        end
+      }
+    })
+
+    local partial_text
+    local appended
+    local set_text_calls = 0
+    view.transcript.append_text = function(this, text)
+      appended = text
+      this.text = (this.text or "") .. text
+    end
+    view.transcript.set_partial_text = function(this, text)
+      partial_text = text
+      this.partial_text = text
+    end
+    view.transcript.set_text = function()
+      set_text_calls = set_text_calls + 1
+    end
+
+    view.prompt_doc:insert(1, 1, "hello")
+    view:submit()
+    set_text_calls = 0
+    conversation:add("activity", "Reasoning\n\nThinking through the plan", {
+      autosave = false
+    })
+    callback(true, nil, "", { event = "activity_update", partial = true })
+
+    test.equal(appended:find("## Reasoning", 1, true) ~= nil, true)
+    test.equal(partial_text, "Thinking through the plan")
+    test.equal(view.transcript_markdown_text:find("## Reasoning", 1, true) ~= nil, true)
+    test.equal(view.transcript_markdown_text:find("Thinking through the plan", 1, true), nil)
+    test.equal(set_text_calls, 0)
+  end)
+
   test.it("does not rebuild transcript for activity updates while assistant text is streaming", function()
     local agent = Codex()
     local callback
