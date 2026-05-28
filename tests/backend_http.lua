@@ -1091,7 +1091,68 @@ test.describe("assistant http backend", function()
     test.equal(markdown:find("## Activity", 1, true), nil)
     test.equal(markdown:find("**Running command**: `make test`", 1, true) ~= nil, true)
     test.equal(markdown:find("in `project`", 1, true) ~= nil, true)
-    test.equal(markdown:find("(completed)", 1, true) ~= nil, true)
+    test.equal(markdown:find("(completed)", 1, true), nil)
+  end)
+
+  test.it("keeps failed tool activity visible in the rendered transcript", function()
+    local restore_background_threads = run_background_threads_immediately()
+    local old_post = http.post
+    local calls = 0
+    http.post = function(_, _, _, options)
+      calls = calls + 1
+      if calls == 1 then
+        options.on_done(true, nil, {
+          choices = {
+            {
+              message = {
+                content = "",
+                tool_calls = {
+                  {
+                    id = "call_failed",
+                    type = "function",
+                    ["function"] = {
+                      name = "exec_command",
+                      arguments = '{"cmd":"make test","workdir":"project"}'
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }, { status = 200 })
+      else
+        options.on_done(true, nil, {
+          choices = {
+            { message = { content = "done" } }
+          }
+        }, { status = 200 })
+      end
+    end
+
+    local agent = Ollama({ stream = false })
+    agent:register_tool("exec_command", {
+      callback = function()
+        return false, "command failed"
+      end,
+      params = {
+        { name = "cmd", type = "string" },
+        { name = "workdir", type = "string" }
+      }
+    })
+    local conversation = Conversation(agent, "project")
+    local backend = HttpBackend()
+
+    backend:send(agent, conversation, function(ok, _, _, meta)
+      if ok and meta and meta.event == "tool_call_request" then
+        backend:resolve_tool_call(agent, conversation, meta.request, "allow", function() end)
+      end
+    end)
+
+    http.post = old_post
+    restore_background_threads()
+    local markdown = conversation:to_markdown()
+    test.equal(markdown:find("**Running command**: `make test` in `project` (failed)", 1, true) ~= nil, true)
+    test.equal(markdown:find("(completed)", 1, true), nil)
   end)
 
   test.it("shows apply_patch diffs in activity when verbose tool calling is disabled", function()
@@ -1508,6 +1569,43 @@ test.describe("assistant http backend", function()
     test.equal(requested.title, "Implement Plan?")
     test.equal(requested.prompt:find("Implement the approved plan", 1, true) ~= nil, true)
     test.equal(conversation.status, "idle")
+  end)
+
+  test.it("auto-emits implement_plan requests for plan drafted markers", function()
+    local old_post = http.post
+    http.post = function(_, _, _, options)
+      options.on_done(true, nil, {
+        choices = {
+          {
+            message = {
+              role = "assistant",
+              content = "## Plan\n\n1. Update the code.\n2. Run tests.\n\nPlan Drafted!"
+            }
+          }
+        }
+      }, { status = 200 })
+    end
+
+    local agent = tools.register_agent_tools(Ollama({ stream = false }))
+    local conversation = Conversation(agent, "project")
+    conversation.collaboration_mode = "plan"
+    local backend = HttpBackend()
+    local response
+    local requested
+
+    backend:send(agent, conversation, function(ok, _, text, meta)
+      if ok and meta and meta.done then
+        response = text
+      elseif ok and meta and meta.event == "implement_plan_request" then
+        requested = meta.request
+      end
+    end)
+
+    http.post = old_post
+    test.not_nil(requested)
+    test.equal(requested.id, "plan_drafted")
+    test.equal(response:find("Plan Drafted!", 1, true), nil)
+    test.equal(response:find("Update the code", 1, true) ~= nil, true)
   end)
 
   test.it("streams chat-completions tool calls before final response", function()
@@ -2095,6 +2193,59 @@ test.describe("assistant http backend", function()
     test.equal(response:find("Ready to implement", 1, true), nil)
   end)
 
+  test.it("auto-emits implement_plan requests for streamed plan drafted markers", function()
+    local restore_background_threads = run_background_threads_immediately()
+    local old_request = http.request
+    local function event(data)
+      return "data: " .. json.encode(data) .. "\n\n"
+    end
+    http.request = function(_, _, options)
+      options.on_header({ status = 200 })
+      options.on_chunk(event({
+        choices = {
+          {
+            delta = {
+              content = "# Plan\n\nCreate `tetris.c`.\n\nPlan "
+            }
+          }
+        }
+      }))
+      options.on_chunk(event({
+        choices = {
+          {
+            delta = {
+              content = "Drafted!"
+            },
+            finish_reason = "stop"
+          }
+        }
+      }))
+      options.on_done(true, nil, nil, { status = 200 })
+    end
+
+    local agent = tools.register_agent_tools(Ollama({ stream = true }))
+    local conversation = Conversation(agent, "project")
+    conversation.collaboration_mode = "plan"
+    local backend = HttpBackend()
+    local response
+    local requested
+
+    backend:send(agent, conversation, function(ok, _, text, meta)
+      if ok and meta and meta.done then
+        response = text
+      elseif ok and meta and meta.event == "implement_plan_request" then
+        requested = meta.request
+      end
+    end)
+
+    http.request = old_request
+    restore_background_threads()
+    test.not_nil(requested)
+    test.equal(requested.id, "plan_drafted")
+    test.equal(response:find("Plan Drafted!", 1, true), nil)
+    test.equal(response:find("Create `tetris.c`", 1, true) ~= nil, true)
+  end)
+
   test.it("resets streamed response text between tool rounds", function()
     local restore_background_threads = run_background_threads_immediately()
     local old_request = http.request
@@ -2585,6 +2736,7 @@ test.describe("assistant http backend", function()
     local calls = 0
     local executed = false
     local asked = false
+    local second_body
     http.post = function(_, _, _, options)
       calls = calls + 1
       if calls == 1 then
@@ -2594,6 +2746,18 @@ test.describe("assistant http backend", function()
               message = {
                 role = "assistant",
                 content = "<function=apply_patch>\n<parameter=patch>\n*** Begin Patch\n*** Add File: main.c\n+int main(void) { return 0; }\n*** End Patch\n</parameter>\n</function>"
+              }
+            }
+          }
+        }, { status = 200 })
+      elseif calls == 2 then
+        second_body = json.decode(options.body)
+        options.on_done(true, nil, {
+          choices = {
+            {
+              message = {
+                role = "assistant",
+                content = "## Plan\n\n1. Keep planning.\n2. Switch modes before editing.\n\nPlan Drafted!"
               }
             }
           }
@@ -2610,10 +2774,13 @@ test.describe("assistant http backend", function()
     conversation.collaboration_mode = "plan"
     local backend = HttpBackend()
     local response
+    local requested
 
     backend:send(agent, conversation, function(ok, _, text, meta)
       if ok and meta and meta.event == "tool_call_request" then
         asked = true
+      elseif ok and meta and meta.event == "implement_plan_request" then
+        requested = meta.request
       elseif ok and meta and meta.done then
         response = text
       end
@@ -2623,11 +2790,12 @@ test.describe("assistant http backend", function()
     restore_background_threads()
     test.equal(asked, false)
     test.equal(executed, false)
-    test.equal(calls, 1)
-    test.equal(
-      response:find("not available in the current collaboration mode", 1, true) ~= nil,
-      true
-    )
+    test.equal(calls, 2)
+    test.not_nil(requested)
+    test.equal(response:find("not available in the current collaboration mode", 1, true), nil)
+    test.equal(response:find("Switch modes before editing", 1, true) ~= nil, true)
+    test.equal(second_body.messages[#second_body.messages].role, "tool")
+    test.equal(second_body.messages[#second_body.messages].content:find("call `implement_plan`", 1, true) ~= nil, true)
     local found_activity = false
     for _, message in ipairs(conversation.messages) do
       if message.role == "activity" and message.message:find("apply_patch", 1, true) then

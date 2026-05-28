@@ -34,4 +34,12 @@ test.describe("assistant stream state", function()
       "<proposed_plan>\n# Plan\nDo the work.\n</proposed_plan>"
     )
   end)
+
+  test.it("detects and strips final plan drafted markers", function()
+    local text = "# Plan\n\nDo the work.\n\nPlan Drafted!\n"
+    test.equal(stream_state.contains_completed_plan(text), true)
+    test.equal(stream_state.has_plan_drafted_marker(text), true)
+    test.equal(stream_state.strip_plan_drafted_marker(text), "# Plan\n\nDo the work.")
+    test.equal(stream_state.contains_completed_plan("Plan Drafted! then more text"), false)
+  end)
 end)

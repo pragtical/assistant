@@ -266,7 +266,8 @@ misctools.tools = {
     callback = misctools.implement_plan,
     description = table.concat({
       "Ask the user whether the completed plan should be implemented now.",
-      "Use this only in Plan mode after presenting a decision-complete plan.",
+      "In Plan mode, call this after presenting a decision-complete plan.",
+      "Call this instead of attempting project mutations that are not allowed in Plan mode.",
       "When the user accepts, the assistant switches to Implementation mode and starts implementing the plan automatically."
     }, "\n"),
     read_only = true,

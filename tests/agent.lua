@@ -2682,6 +2682,8 @@ test.describe("assistant agent", function()
 
     test.equal(payload.messages[1].content:find("Collaboration mode: Plan", 1, true) ~= nil, true)
     test.equal(payload.messages[1].content:find("Markdown plan", 1, true) ~= nil, true)
+    test.equal(payload.messages[1].content:find("Plan Drafted!", 1, true) ~= nil, true)
+    test.equal(payload.messages[1].content:find("must call implement_plan", 1, true) ~= nil, true)
     test.equal(names.read, true)
     test.equal(names.search, true)
     test.equal(names.update_plan, nil)

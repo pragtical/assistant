@@ -52,6 +52,8 @@ config.plugins.assistant = common.merge({
   fetch_model_metadata = true,
   auto_compact = true,
   auto_compact_threshold = 0.85,
+  auto_compact_min_input_tokens = 50000,
+  auto_compact_max_input_tokens = 200000,
   auto_compact_min_new_messages = 4,
   auto_save = true,
   prompt_height = 140,
@@ -198,8 +200,24 @@ config.plugins.assistant = common.merge({
       path = "auto_compact_threshold",
       type = "number",
       default = 0.85,
-      min = 0.5,
+      min = 0.01,
       max = 0.98
+    },
+    {
+      label = "Auto Compact Min Input Tokens",
+      description = "Minimum reported input/context tokens required before automatic local compaction can run.",
+      path = "auto_compact_min_input_tokens",
+      type = "number",
+      default = 50000,
+      min = 0
+    },
+    {
+      label = "Auto Compact Max Input Tokens",
+      description = "Reported input/context token ceiling that triggers automatic local compaction even before the context threshold is reached. Set 0 to disable.",
+      path = "auto_compact_max_input_tokens",
+      type = "number",
+      default = 200000,
+      min = 0
     },
     {
       label = "Web Timeout",

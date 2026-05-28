@@ -184,6 +184,211 @@ test.describe("assistant Anthropic backend", function()
     test.equal(done_text, nil)
   end)
 
+  test.it("coalesces adjacent tool uses before tool results", function()
+    local agent = tools.register_agent_tools(DeepSeekAnthropic({ stream = false }))
+    local conversation = Conversation(agent, "project")
+    conversation:add("tool_call", "Tool: read", {
+      autosave = false,
+      meta = {
+        provider_message = {
+          role = "assistant",
+          content = {
+            {
+              type = "tool_use",
+              id = "call_read",
+              name = "read",
+              input = { path = "project/a.txt" }
+            }
+          }
+        }
+      }
+    })
+    conversation:add("tool_call", "Tool: exec_command", {
+      autosave = false,
+      meta = {
+        provider_message = {
+          role = "assistant",
+          content = {
+            {
+              type = "tool_use",
+              id = "call_exec",
+              name = "exec_command",
+              input = { cmd = "true" }
+            }
+          }
+        }
+      }
+    })
+    conversation:add("tool_result", "Tool: read\nStatus: ok", {
+      autosave = false,
+      meta = {
+        provider_messages = {
+          {
+            role = "user",
+            content = {
+              {
+                type = "tool_result",
+                tool_use_id = "call_read",
+                content = "file text"
+              }
+            }
+          }
+        }
+      }
+    })
+    conversation:add("tool_result", "Tool: exec_command\nStatus: ok", {
+      autosave = false,
+      meta = {
+        provider_messages = {
+          {
+            role = "user",
+            content = {
+              {
+                type = "tool_result",
+                tool_use_id = "call_exec",
+                content = "exit_code: 0"
+              }
+            }
+          }
+        }
+      }
+    })
+
+    local payload = agent:build_payload(conversation)
+    local assistant_message
+    local result_message
+    for index, message in ipairs(payload.messages) do
+      if message.role == "assistant" then
+        assistant_message = message
+        result_message = payload.messages[index + 1]
+        break
+      end
+    end
+
+    test.not_nil(assistant_message)
+    test.not_nil(result_message)
+    test.equal(result_message.role, "user")
+    test.equal(assistant_message.content[1].type, "tool_use")
+    test.equal(assistant_message.content[1].id, "call_read")
+    test.equal(assistant_message.content[2].type, "tool_use")
+    test.equal(assistant_message.content[2].id, "call_exec")
+    test.equal(result_message.content[1].type, "tool_result")
+    test.equal(result_message.content[1].tool_use_id, "call_read")
+    test.equal(result_message.content[2].type, "tool_result")
+    test.equal(result_message.content[2].tool_use_id, "call_exec")
+  end)
+
+  test.it("keeps immediate Anthropic tool result messages pure", function()
+    local agent = tools.register_agent_tools(DeepSeekAnthropic({ stream = false }))
+    local conversation = Conversation(agent, "project")
+    conversation:add("tool_call", "Tool: read", {
+      autosave = false,
+      meta = {
+        provider_message = {
+          role = "assistant",
+          content = {
+            {
+              type = "tool_use",
+              id = "call_read",
+              name = "read",
+              input = { path = "project/a.txt" }
+            }
+          }
+        }
+      }
+    })
+    conversation:add("tool_result", "Tool: read\nStatus: ok", {
+      autosave = false,
+      meta = {
+        provider_messages = {
+          {
+            role = "user",
+            content = {
+              { type = "text", text = "Tool result follows." },
+              {
+                type = "tool_result",
+                tool_use_id = "call_read",
+                content = "file text"
+              }
+            }
+          }
+        }
+      }
+    })
+
+    local payload = agent:build_payload(conversation)
+    local result_message
+    for index, message in ipairs(payload.messages) do
+      if message.role == "assistant" then
+        result_message = payload.messages[index + 1]
+        break
+      end
+    end
+
+    test.not_nil(result_message)
+    test.equal(result_message.role, "user")
+    test.equal(#result_message.content, 1)
+    test.equal(result_message.content[1].type, "tool_result")
+    test.equal(result_message.content[1].tool_use_id, "call_read")
+  end)
+
+  test.it("does not merge tool results into normal user messages", function()
+    local agent = tools.register_agent_tools(DeepSeekAnthropic({ stream = false }))
+    local conversation = Conversation(agent, "project")
+    conversation:add("user", "normal user text", { autosave = false })
+    conversation:add("tool_call", "Tool: read", {
+      autosave = false,
+      meta = {
+        provider_message = {
+          role = "assistant",
+          content = {
+            {
+              type = "tool_use",
+              id = "call_read",
+              name = "read",
+              input = { path = "project/a.txt" }
+            }
+          }
+        }
+      }
+    })
+    conversation:add("tool_result", "Tool: read\nStatus: ok", {
+      autosave = false,
+      meta = {
+        provider_messages = {
+          {
+            role = "user",
+            content = {
+              {
+                type = "tool_result",
+                tool_use_id = "call_read",
+                content = "file text"
+              }
+            }
+          }
+        }
+      }
+    })
+
+    local payload = agent:build_payload(conversation)
+    local assistant_message
+    local result_message
+    for index, message in ipairs(payload.messages) do
+      if message.role == "assistant" then
+        assistant_message = message
+        result_message = payload.messages[index + 1]
+        break
+      end
+    end
+
+    test.not_nil(assistant_message)
+    test.not_nil(result_message)
+    test.equal(result_message.role, "user")
+    test.equal(#result_message.content, 1)
+    test.equal(result_message.content[1].type, "tool_result")
+    test.equal(result_message.content[1].tool_use_id, "call_read")
+  end)
+
   test.it("replays streamed thinking blocks before tool results", function()
     local restore_background_threads = run_background_threads_immediately()
     local old_request = http.request

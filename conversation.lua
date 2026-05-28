@@ -453,6 +453,66 @@ function Conversation.add_memory(project_dir, title, content)
   return ok and item or nil
 end
 
+local function truncate_title(text, limit)
+  text = tostring(text or ""):gsub("%s+", " "):match("^%s*(.-)%s*$") or ""
+  limit = limit or 80
+  if #text <= limit then return text end
+  return text:sub(1, limit - 3) .. "..."
+end
+
+local function compaction_memory_title(conversation)
+  local title = truncate_title(conversation.title or "Conversation", 72)
+  if title == "" then title = "Conversation" end
+  return "Compacted Conversation: " .. title
+end
+
+local function compaction_memory_content(conversation, compaction)
+  return table.concat({
+    "Conversation: " .. tostring(conversation.title or conversation.id or "Conversation"),
+    "Conversation ID: " .. tostring(conversation.id or ""),
+    "Trigger: " .. tostring(compaction.trigger or "manual"),
+    "Compacted at: " .. tostring(compaction.created_at or now()),
+    "Messages summarized: " .. tostring(compaction.source_message_count or compaction.message_count or 0),
+    "",
+    tostring(compaction.summary or "")
+  }, "\n")
+end
+
+---Store or update the project memory that mirrors the latest compaction.
+---@return table|nil memory
+function Conversation:store_local_compaction_memory()
+  if not (self.local_compaction and self.local_compaction.summary ~= "") then return nil end
+  local title = compaction_memory_title(self)
+  local content = compaction_memory_content(self, self.local_compaction)
+  local memory_id = self.local_compaction.memory_id
+  local memory
+  if memory_id then
+    memory = Conversation.update_memory(self.project_dir, memory_id, title, content)
+  end
+  if not memory then
+    for _, item in ipairs(Conversation.list_memories(self.project_dir)) do
+      local meta = item.meta or {}
+      if meta.local_compaction_conversation_id == self.id then
+        memory = Conversation.update_memory(self.project_dir, item.id, title, content)
+        break
+      end
+    end
+  end
+  if not memory then
+    memory = Conversation.add_memory(self.project_dir, title, content)
+  end
+  if memory then
+    memory.meta = memory.meta or {}
+    memory.meta.local_compaction_conversation_id = self.id
+    memory.meta.local_compaction = true
+    memory.meta.local_compaction_trigger = self.local_compaction.trigger or "manual"
+    write_table(Conversation.memory_path(self.project_dir, memory.id), memory)
+    self.local_compaction.memory_id = memory.id
+    self.memories = Conversation.list_memories(self.project_dir)
+  end
+  return memory
+end
+
 ---Update memory.
 ---@param project_dir string|nil
 ---@param id string
@@ -801,6 +861,7 @@ function Conversation:record_local_compaction(summary, metadata)
     usage = metadata.usage,
     context_snapshot = self.context_snapshot
   }
+  self:store_local_compaction_memory()
   self:add("assistant", table.concat({
     "### Conversation Compacted",
     "",

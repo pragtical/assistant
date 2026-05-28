@@ -14,6 +14,7 @@ PlanModeStreamState.__index = PlanModeStreamState
 
 local OPEN_TAG = "<proposed_plan>"
 local CLOSE_TAG = "</proposed_plan>"
+local PLAN_DRAFTED_MARKER = "Plan Drafted!"
 
 ---Handle trim.
 local function trim(text)
@@ -110,14 +111,35 @@ end
 stream_state.PlanModeStreamState = PlanModeStreamState
 stream_state.OPEN_PROPOSED_PLAN_TAG = OPEN_TAG
 stream_state.CLOSE_PROPOSED_PLAN_TAG = CLOSE_TAG
+stream_state.PLAN_DRAFTED_MARKER = PLAN_DRAFTED_MARKER
 
 ---Handle contains completed plan.
 ---@param text string
 ---@return boolean
 function stream_state.contains_completed_plan(text)
   text = tostring(text or "")
-  return find_plan_open(text) ~= nil
-    and text:find(CLOSE_TAG, 1, true) ~= nil
+  local trimmed = trim(text)
+  return trimmed:sub(-#PLAN_DRAFTED_MARKER) == PLAN_DRAFTED_MARKER
+    or (find_plan_open(text) ~= nil and text:find(CLOSE_TAG, 1, true) ~= nil)
+end
+
+---Return whether text ends with the plan drafted marker.
+---@param text string
+---@return boolean
+function stream_state.has_plan_drafted_marker(text)
+  local trimmed = trim(text)
+  return trimmed:sub(-#PLAN_DRAFTED_MARKER) == PLAN_DRAFTED_MARKER
+end
+
+---Strip the plan drafted marker from the end of text.
+---@param text string
+---@return string
+function stream_state.strip_plan_drafted_marker(text)
+  text = tostring(text or "")
+  if not stream_state.has_plan_drafted_marker(text) then return text end
+  local trimmed = trim(text)
+  trimmed = trimmed:sub(1, #trimmed - #PLAN_DRAFTED_MARKER)
+  return trim(trimmed)
 end
 
 ---Handle wrap plan.

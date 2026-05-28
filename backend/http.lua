@@ -231,6 +231,7 @@ local function sanitize_plan_response(text)
   for _, pattern in ipairs(patterns) do
     text = text:gsub(pattern, "")
   end
+  text = stream_state.strip_plan_drafted_marker(text)
   return text:match("^%s*(.-)%s*$") or text
 end
 
@@ -680,10 +681,31 @@ local function tool_activity_text(agent, call, status, result, activity_context)
   return table.concat(lines, "\n")
 end
 
+---Return the status that should be persisted in transcript activity.
+---@param status string|nil
+---@return string|nil status
+---@return boolean skip
+local function persisted_tool_activity_status(status)
+  status = tostring(status or "")
+  if status == "" or status == "requested" then return nil, false end
+  if status == "completed"
+    or status == "answered"
+    or status == "running"
+    or status == "waiting for confirmation"
+    or status == "waiting for input"
+  then
+    return nil, true
+  end
+  return status, false
+end
+
 ---Add tool activity.
 local function add_tool_activity(agent, conversation, call, status, result)
   local name = call and (agent.resolve_tool_name and agent:resolve_tool_name(call.name) or call.name) or "unknown"
   if call then call.name = name end
+  local persisted_status, skip = persisted_tool_activity_status(status)
+  if skip then return end
+  status = persisted_status
   local id = call and (call.id or call.call_id or tool_call_signature(agent, call)) or name
   local tool = agent.tools and agent.tools[name] or nil
   local activity_context = {
@@ -696,7 +718,7 @@ local function add_tool_activity(agent, conversation, call, status, result)
   local compact = tool and tool.compact_activity_markdown
     and tool.compact_activity_markdown(call, status, result, activity_context)
     or nil
-  add_activity(conversation, verbose, "tool:" .. tostring(name) .. ":" .. tostring(status or "pending") .. ":" .. tostring(id), compact)
+  upsert_activity(conversation, verbose, "tool:" .. tostring(name) .. ":" .. tostring(id), compact)
 end
 
 ---Resume a pending backend continuation without depending on editor focus.
@@ -1402,6 +1424,9 @@ function HttpBackend:send(agent, conversation, callback)
 
   ---Handle finish.
   local function finish(text, info, final_usage, finish_meta)
+    finish_meta = finish_meta or {}
+    local auto_implement_plan = finish_meta.auto_implement_plan == true
+    finish_meta.auto_implement_plan = nil
     self.pending_tool_call = nil
     self.pending_user_input_tool = nil
     self:finish_request()
@@ -1417,6 +1442,17 @@ function HttpBackend:send(agent, conversation, callback)
     }, finish_meta or {})
     callback(true, nil, text or "", meta)
     compact_after_done()
+    if auto_implement_plan then
+      callback(true, nil, nil, {
+        event = "implement_plan_request",
+        request = {
+          id = "plan_drafted",
+          title = "Implement Plan?",
+          body = "The assistant has finished planning. Switch to Implementation mode and start implementing the plan now?",
+          prompt = "Implement the approved plan now. Use the plan from the conversation above as the implementation specification."
+        }
+      })
+    end
   end
 
   ---Handle finish plan if complete.
@@ -1429,14 +1465,15 @@ function HttpBackend:send(agent, conversation, callback)
   end
 
   ---Handle finish blocked plan tool.
-  local function finish_blocked_plan_tool(call, reason)
+  local function continue_after_plan_tool_block(call, reason, continue)
     local name = tostring(call and call.name or "unknown")
     local message = reason or string.format(
-      "Plan mode blocked the model's `%s` tool call because that tool is not available in the current collaboration mode. Switch to Implementation mode before creating, editing, deleting, patching, formatting, or otherwise changing project files.",
+      "Plan mode blocked the model's `%s` tool call because that tool is not available in the current collaboration mode. Present the implementation plan and call `implement_plan` to ask the user whether to switch to Implementation mode before creating, editing, deleting, patching, formatting, or otherwise changing project files.",
       name
     )
     add_tool_activity(agent, conversation, call, "blocked", message)
-    finish(message, nil, usage)
+    add_tool_result(agent, conversation, call, message, "error")
+    continue()
   end
 
   local post_once
@@ -1479,7 +1516,18 @@ function HttpBackend:send(agent, conversation, callback)
       if not tool_allowed_for_mode(agent, conversation, resolved_name) then
         call.name = resolved_name
         if is_plan_mode(agent, conversation) then
-          finish_blocked_plan_tool(call)
+          local provider_message = agent:tool_call_provider_message(calls, index)
+          conversation:add("tool_call", agent:tool_call_display(call), {
+            meta = {
+              call = call,
+              provider_message = provider_message
+            },
+            autosave = false
+          })
+          continue_after_plan_tool_block(call, nil, function()
+            index = index + 1
+            ask_next()
+          end)
         else
           add_tool_activity(agent, conversation, call, "blocked")
           local unavailable_message = "tool is not available in the current collaboration mode"
@@ -1492,7 +1540,18 @@ function HttpBackend:send(agent, conversation, callback)
       call.name = resolved_name
       local plan_block_reason = is_plan_mode(agent, conversation) and plan_mode_tool_block_reason(call)
       if plan_block_reason then
-        finish_blocked_plan_tool(call, plan_block_reason)
+        local provider_message = agent:tool_call_provider_message(calls, index)
+        conversation:add("tool_call", agent:tool_call_display(call), {
+          meta = {
+            call = call,
+            provider_message = provider_message
+          },
+          autosave = false
+        })
+        continue_after_plan_tool_block(call, plan_block_reason, function()
+          index = index + 1
+          ask_next()
+        end)
         return
       end
       if resolved_name == "implement_plan" then
@@ -1918,63 +1977,56 @@ function HttpBackend:send(agent, conversation, callback)
           local final_is_completed_plan = is_plan_mode(agent, conversation)
             and final_text
             and contains_completed_plan(final_text)
+          local final_should_auto_implement = final_is_completed_plan
+            and not calls_include_tool(agent, text_tool_calls, "implement_plan")
           if stream_error then
             conversation:set_status("error", { autosave = false })
             conversation:append_raw_response("http-stream-error", stream_error)
             callback(false, request_error("Chat request", agent, info, stream_error, err), nil, { info = info })
           elseif has_streamed_tool_calls and final_is_completed_plan then
-            conversation:set_status("idle", { autosave = false })
-            callback(true, nil, sanitize_plan_response(final_text), {
-              done = true,
-              info = info,
-              usage = usage,
-              provider_reasoning_content = should_persist_reasoning_content(agent)
-                and reasoning_text ~= ""
-                and reasoning_text
-                or nil
-            })
-            compact_after_done()
+            local calls = finalize_stream_tool_calls(streamed_tool_calls)
+            if calls_include_tool(agent, calls, "implement_plan") then
+              compact_after_done()
+              chunks = {}
+              attach_reasoning_content_to_calls(agent, calls, reasoning_text)
+              request_tool_approval(calls, round or 0, true)
+            else
+              finish(final_text, info, usage, {
+                provider_reasoning_content = should_persist_reasoning_content(agent)
+                  and reasoning_text ~= ""
+                  and reasoning_text
+                  or nil,
+                auto_implement_plan = true
+              })
+            end
           elseif has_streamed_tool_calls and not plan_completed then
             compact_after_done()
             chunks = {}
             local calls = finalize_stream_tool_calls(streamed_tool_calls)
             attach_reasoning_content_to_calls(agent, calls, reasoning_text)
             request_tool_approval(calls, round or 0, true)
-          elseif text_tool_calls and #text_tool_calls > 0 then
+          elseif text_tool_calls and #text_tool_calls > 0 and not final_should_auto_implement then
             compact_after_done()
             chunks = {}
             partial_text = ""
             attach_reasoning_content_to_calls(agent, text_tool_calls, reasoning_text)
             request_tool_approval(text_tool_calls, round or 0, true)
-          elseif plan_stream_state and plan_completed and final_text and final_text ~= "" then
-            conversation:set_status("idle", { autosave = false })
-            final_text = sanitize_plan_response(final_text)
-            callback(true, nil, final_text, {
-              done = true,
-              info = info,
-              usage = usage,
+          elseif final_should_auto_implement or (plan_stream_state and plan_completed and final_text and final_text ~= "") then
+            finish(final_text, info, usage, {
               provider_reasoning_content = should_persist_reasoning_content(agent)
                 and reasoning_text ~= ""
                 and reasoning_text
-                or nil
+                or nil,
+              auto_implement_plan = final_should_auto_implement
             })
-            compact_after_done()
           else
             emit_partial(true)
-            conversation:set_status("idle", { autosave = false })
-            if is_plan_mode(agent, conversation) then
-              final_text = sanitize_plan_response(final_text)
-            end
-            callback(true, nil, final_text, {
-              done = true,
-              info = info,
-              usage = usage,
+            finish(final_text, info, usage, {
               provider_reasoning_content = should_persist_reasoning_content(agent)
                 and reasoning_text ~= ""
                 and reasoning_text
                 or nil
             })
-            compact_after_done()
           end
         else
           flush_raw_stream_events(true)
@@ -2033,17 +2085,27 @@ function HttpBackend:send(agent, conversation, callback)
           if parsed_usage and conversation.set_usage then
             conversation:set_usage(parsed_usage)
           end
-          if tool_calls and #tool_calls > 0 and is_plan_mode(agent, conversation) and contains_completed_plan(response_text) then
-            finish(response_text, info, parsed_usage, {
-              provider_reasoning_content = reasoning_content
-            })
+          local response_is_completed_plan = is_plan_mode(agent, conversation)
+            and contains_completed_plan(response_text)
+          if tool_calls and #tool_calls > 0 and response_is_completed_plan then
+            if calls_include_tool(agent, tool_calls, "implement_plan") then
+              compact_after_done()
+              attach_reasoning_content_to_calls(agent, tool_calls, reasoning_content)
+              request_tool_approval(tool_calls, round, false)
+            else
+              finish(response_text, info, parsed_usage, {
+                provider_reasoning_content = reasoning_content,
+                auto_implement_plan = true
+              })
+            end
           elseif tool_calls and #tool_calls > 0 then
             compact_after_done()
             attach_reasoning_content_to_calls(agent, tool_calls, reasoning_content)
             request_tool_approval(tool_calls, round, false)
           else
             finish(response_text, info, parsed_usage, {
-              provider_reasoning_content = reasoning_content
+              provider_reasoning_content = reasoning_content,
+              auto_implement_plan = response_is_completed_plan
             })
           end
         else

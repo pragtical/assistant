@@ -142,8 +142,8 @@ end
 ---Handle view is at bottom.
 local function view_is_at_bottom(view)
   local max_scroll = math.max(0, view:get_scrollable_size() - view.size.y)
-  local y = math.max(view.scroll.y or 0, view.scroll.to.y or 0)
-  return max_scroll <= 1 or y >= max_scroll - 2
+  local y = view.scroll.to.y or view.scroll.y or 0
+  return max_scroll <= 0 or y >= max_scroll
 end
 
 ---Handle scroll view to bottom.
@@ -156,7 +156,7 @@ local function scroll_view_to_bottom(view)
 end
 
 local function current_scroll_y(view)
-  return math.max(view.scroll.y or 0, view.scroll.to.y or 0)
+  return view.scroll.to.y or view.scroll.y or 0
 end
 
 local function has_transient_stale_layout(view)
@@ -167,9 +167,28 @@ local function has_transient_stale_layout(view)
     )
 end
 
+local function scroll_max(view)
+  return math.max(0, view:get_scrollable_size() - view.size.y)
+end
+
+local function scroll_target_is_at_bottom(view)
+  local max_scroll = scroll_max(view)
+  local y = view.scroll.to.y or view.scroll.y or 0
+  return max_scroll <= 0 or y >= max_scroll
+end
+
+local function restore_scroll_position(view, y)
+  if not (view and y) then return end
+  view.scroll.y = y
+  view.scroll.to.y = y
+end
+
 ---Return whether streamed output should keep following the bottom.
 function PromptView:should_follow_streaming_transcript()
   local at_bottom = view_is_at_bottom(self.transcript)
+  if self.streaming_transcript_manual_scroll then
+    return false
+  end
   if self.streaming_transcript_follow_bottom == nil then
     self.streaming_transcript_follow_bottom = at_bottom
   elseif self.streaming_transcript_follow_bottom
@@ -184,14 +203,19 @@ function PromptView:should_follow_streaming_transcript()
 end
 
 ---Scroll the streamed transcript to bottom and remember the automatic position.
-function PromptView:scroll_streaming_transcript_to_bottom()
+---@param already_deferred? boolean
+function PromptView:scroll_streaming_transcript_to_bottom(already_deferred)
   local transcript = self.transcript
-  if has_transient_stale_layout(transcript) then
+  if has_transient_stale_layout(transcript) and not already_deferred then
     local generation = self.submit_generation
     core.add_thread(function()
       coroutine.yield(0)
-      if self.transcript == transcript and self.submit_generation == generation then
-        self:scroll_streaming_transcript_to_bottom()
+      if self.transcript == transcript
+        and self.submit_generation == generation
+        and self.streaming_transcript_follow_bottom ~= false
+        and not self.streaming_transcript_manual_scroll
+      then
+        self:scroll_streaming_transcript_to_bottom(true)
       end
     end)
     return
@@ -205,6 +229,7 @@ function PromptView:scroll_streaming_transcript_to_bottom_when_ready()
   if not transcript then return end
 
   local generation = self.submit_generation
+  local deferred_for_stale_layout = false
   local function still_current()
     return self.transcript == transcript and self.submit_generation == generation
   end
@@ -223,17 +248,24 @@ function PromptView:scroll_streaming_transcript_to_bottom_when_ready()
       transcript:ensure_layout()
     end
     if has_transient_stale_layout(transcript) then
-      core.add_thread(function()
-        coroutine.yield(0)
-        scroll_when_ready()
-      end)
-      return
+      if not deferred_for_stale_layout then
+        deferred_for_stale_layout = true
+        core.add_thread(function()
+          coroutine.yield(0)
+          scroll_when_ready()
+        end)
+        return
+      end
     end
     if transcript.layouting and transcript.when_ready then
       transcript:when_ready(scroll_when_ready)
       return
     end
     if still_current() then
+      if self.streaming_transcript_follow_bottom == false then
+        return
+      end
+      if self.streaming_transcript_manual_scroll then return end
       self:scroll_streaming_transcript_to_bottom()
     end
   end
@@ -242,9 +274,49 @@ function PromptView:scroll_streaming_transcript_to_bottom_when_ready()
     scroll_when_ready()
   else
     if self.transcript == transcript and self.submit_generation == generation then
+      if self.streaming_transcript_follow_bottom == false then return end
+      if self.streaming_transcript_manual_scroll then return end
       self:scroll_streaming_transcript_to_bottom()
     end
   end
+end
+
+---Run a rendered transcript mutation while preserving the user's scroll intent.
+---
+---The rule is intentionally simple:
+---* If the transcript was at bottom before rendering, keep following bottom.
+---* If it was not at bottom, restore the same scroll position after rendering.
+---@param callback function
+---@param options? table
+---@return boolean was_at_bottom
+function PromptView:with_transcript_scroll_policy(callback, options)
+  local transcript = self.transcript
+  if self.transcript_mode ~= "rendered" or not transcript then
+    return false, callback()
+  end
+
+  options = options or {}
+  local was_at_bottom = view_is_at_bottom(transcript)
+    or (
+      self.streaming_transcript_follow_bottom == true
+      and not self.streaming_transcript_manual_scroll
+      and transcript.scroll.y == transcript.scroll.to.y
+    )
+  local preserved_scroll_y = was_at_bottom and nil or current_scroll_y(transcript)
+  local result = callback()
+
+  if was_at_bottom then
+    self.streaming_transcript_follow_bottom = true
+    self.streaming_transcript_manual_scroll = nil
+    if options.scroll ~= false then
+      self:scroll_streaming_transcript_to_bottom_when_ready()
+    end
+  else
+    self.streaming_transcript_follow_bottom = false
+    restore_scroll_position(transcript, preserved_scroll_y)
+  end
+
+  return was_at_bottom, result
 end
 
 ---Handle widget width.
@@ -399,6 +471,7 @@ function PromptView:new(options)
   self.pending_user_input_request = nil
   self.pending_approval_request = nil
   self.pending_tool_call_request = nil
+  self.pending_implement_plan_request = nil
   self.submit_generation = 0
   self.prompt_queue = {}
   self.active_prompt_turn = false
@@ -438,6 +511,29 @@ function PromptView:new(options)
     title = self:get_name(),
     virtualized = true
   })
+  -- Conversation output is updated frequently while streaming; disabling the
+  -- inherited animated scroll transition on this instance avoids drift between
+  -- the visible scroll position and the target position used by autoscroll.
+  self.transcript.update = function(transcript)
+    if transcript.linked_doc and transcript.linked_doc:get_change_id() ~= transcript.last_doc_change_id then
+      transcript:refresh_from_doc()
+    end
+    if transcript.current_scale ~= SCALE then
+      transcript:on_scale_change(SCALE, transcript.current_scale)
+      transcript.current_scale = SCALE
+    end
+    if
+      not transcript.scrollable
+      and transcript.scroll.x == transcript.scroll.to.x
+      and transcript.scroll.y == transcript.scroll.to.y
+    then
+      return
+    end
+    transcript:clamp_scroll_position()
+    transcript.scroll.x = transcript.scroll.to.x
+    transcript.scroll.y = transcript.scroll.to.y
+    transcript:update_scrollbar()
+  end
   self.raw_transcript_doc = Doc("Assistant Conversation.md", nil, true)
   set_doc_text(self.raw_transcript_doc, self.transcript_markdown_text)
   self.raw_transcript = DocView(self.raw_transcript_doc)
@@ -730,19 +826,21 @@ function PromptView:update_transcript(markdown)
   local appended = false
   local force_set = self.force_transcript_set
   self.force_transcript_set = nil
-  if not force_set
-    and self.transcript_mode == "rendered"
-    and self.transcript.append_text
-    and previous ~= ""
-    and markdown:sub(1, #previous) == previous
-  then
-    self.transcript:append_text(markdown:sub(#previous + 1))
-    appended = true
-  end
+  self:with_transcript_scroll_policy(function()
+    if not force_set
+      and self.transcript_mode == "rendered"
+      and self.transcript.append_text
+      and previous ~= ""
+      and markdown:sub(1, #previous) == previous
+    then
+      self.transcript:append_text(markdown:sub(#previous + 1))
+      appended = true
+    end
 
-  if not appended and self.transcript_mode == "rendered" then
-    self.transcript:set_text(markdown)
-  end
+    if not appended and self.transcript_mode == "rendered" then
+      self.transcript:set_text(markdown)
+    end
+  end)
   self.transcript_markdown_text = markdown
   if self.pending_transcript_snapshot then
     self.transcript_snapshot = self.pending_transcript_snapshot
@@ -812,9 +910,10 @@ function PromptView:flush_streaming_transcript()
     return
   end
 
-  local follow_bottom = self:should_follow_streaming_transcript()
-  self:ensure_streaming_assistant_heading()
-  self.transcript:set_partial_text(self.pending_streaming_transcript_text)
+  local follow_bottom = self:with_transcript_scroll_policy(function()
+    self:ensure_streaming_assistant_heading()
+    self.transcript:set_partial_text(self.pending_streaming_transcript_text)
+  end, { scroll = false })
   self.pending_streaming_transcript_text = nil
   self.last_streaming_transcript_refresh = system.get_time()
   if follow_bottom then
@@ -843,23 +942,28 @@ function PromptView:update_streaming_activity_transcript()
   local reasoning = reasoning_activity_text(message)
   if not reasoning then return false end
 
-  local follow_bottom = self:should_follow_streaming_transcript()
+  local follow_bottom
   if self.streaming_activity_partial_message ~= message then
-    local previous = self.transcript_markdown_text or ""
-    local heading = (previous ~= "" and "\n\n" or "") .. "## Reasoning\n\n"
-    self.streaming_activity_base_markdown = previous
-    self.streaming_activity_partial_message = message
-    self.streaming_activity_heading_committed = true
-    self.transcript:append_text(heading)
-    self.transcript_markdown_text = previous .. heading
-    self.transcript_snapshot = nil
-    self.force_transcript_set = true
-    self.pending_transcript_snapshot = nil
+    follow_bottom = self:with_transcript_scroll_policy(function()
+      local previous = self.transcript_markdown_text or ""
+      local heading = (previous ~= "" and "\n\n" or "") .. "## Reasoning\n\n"
+      self.streaming_activity_base_markdown = previous
+      self.streaming_activity_partial_message = message
+      self.streaming_activity_heading_committed = true
+      self.transcript:append_text(heading)
+      self.transcript_markdown_text = previous .. heading
+      self.transcript_snapshot = nil
+      self.force_transcript_set = true
+      self.pending_transcript_snapshot = nil
+      self.transcript:set_partial_text(reasoning)
+    end, { scroll = false })
+  else
+    follow_bottom = self:with_transcript_scroll_policy(function()
+      self.transcript:set_partial_text(reasoning)
+    end, { scroll = false })
   end
-
-  self.transcript:set_partial_text(reasoning)
   if follow_bottom then
-    self:scroll_streaming_transcript_to_bottom()
+    self:scroll_streaming_transcript_to_bottom_when_ready()
   end
   return true
 end
@@ -875,14 +979,22 @@ function PromptView:commit_streaming_activity_transcript()
     and ((previous ~= "" and "\n\n" or "") .. rendered)
     or ((previous ~= "" and "\n\n" or "") .. "## Reasoning\n\n" .. tostring(reasoning or ""))
   local final_markdown = previous .. appended
-  local follow_bottom = self.transcript and view_is_at_bottom(self.transcript)
 
-  if self.transcript and self.transcript.set_text then
-    self.transcript:set_text(final_markdown)
-  end
+  local follow_bottom = self:with_transcript_scroll_policy(function()
+    if self.transcript and self.transcript.commit_partial_text then
+      if self.streaming_activity_heading_committed then
+        self.transcript:commit_partial_text(tostring(reasoning or ""))
+      else
+        self.transcript:commit_partial_text(appended)
+      end
+    elseif self.transcript and self.transcript.set_text then
+      self.transcript:set_text(final_markdown)
+    end
+  end, { scroll = false })
   self.transcript_markdown_text = final_markdown
   self.transcript_snapshot = self:make_transcript_snapshot()
   self.pending_transcript_snapshot = nil
+  self.force_transcript_set = nil
   self.streaming_activity_partial_message = nil
   self.streaming_activity_base_markdown = nil
   self.streaming_activity_heading_committed = nil
@@ -914,12 +1026,13 @@ function PromptView:commit_streaming_transcript(assistant_message)
     appended_markdown = (previous ~= "" and "\n\n" or "") .. markdown
   end
   local final_markdown = previous .. appended_markdown
-  local follow_bottom = self:should_follow_streaming_transcript()
-  if self.streaming_assistant_heading_committed then
-    self.transcript:set_text(final_markdown)
-  else
-    self.transcript:commit_partial_text(appended_markdown)
-  end
+  local follow_bottom = self:with_transcript_scroll_policy(function()
+    if self.streaming_assistant_heading_committed then
+      self.transcript:set_text(final_markdown)
+    else
+      self.transcript:commit_partial_text(appended_markdown)
+    end
+  end, { scroll = false })
   self.transcript_markdown_text = final_markdown
   self.transcript_snapshot = self:make_transcript_snapshot()
   self.pending_transcript_snapshot = nil
@@ -1055,9 +1168,13 @@ function PromptView:refresh()
   if self.transcript_mode == "raw" then
     self:sync_raw_transcript()
   end
-  if follow_bottom then
+  if follow_bottom and not (
+    transcript_view == self.transcript and self.streaming_transcript_manual_scroll
+  ) then
     if transcript_view == self.transcript then
-      self:scroll_streaming_transcript_to_bottom_when_ready()
+      if not self.streaming_transcript_manual_scroll then
+        self:scroll_streaming_transcript_to_bottom_when_ready()
+      end
     else
       scroll_view_to_bottom(transcript_view)
     end
@@ -1087,6 +1204,7 @@ function PromptView:has_active_prompt_turn()
     or self.pending_user_input_request ~= nil
     or self.pending_approval_request ~= nil
     or self.pending_tool_call_request ~= nil
+    or self.pending_implement_plan_request ~= nil
     or (self.conversation
       and self.conversation.has_unresolved_tool_calls
       and self.conversation:has_unresolved_tool_calls())
@@ -1133,7 +1251,7 @@ function PromptView:dispatch_prompt_turn(text)
   self.submit_generation = (self.submit_generation or 0) + 1
   local generation = self.submit_generation
   self.active_prompt_turn = true
-  local follow_bottom = self.transcript and view_is_at_bottom(self.transcript)
+  self.streaming_transcript_manual_scroll = nil
   local first_user_prompt = true
   for _, message in ipairs(self.conversation.messages or {}) do
     if message.role == "user" and not (message.meta and message.meta.provider_only) then
@@ -1143,7 +1261,7 @@ function PromptView:dispatch_prompt_turn(text)
   end
   self.conversation:add("user", text)
   self:refresh()
-  if follow_bottom then
+  if self.transcript then
     self.streaming_transcript_follow_bottom = true
     self:scroll_streaming_transcript_to_bottom_when_ready()
   end
@@ -1162,12 +1280,17 @@ function PromptView:dispatch_prompt_turn(text)
     end
     local usage = self.conversation and self.conversation.usage or nil
     local total = tonumber(usage and usage.total_tokens)
+    if not total then return false end
+    local min_input = tonumber(conf.auto_compact_min_input_tokens) or 0
+    if min_input > 0 and total < min_input then return false end
     local context = tonumber(usage and (usage.context or usage.model_context_window))
       or tonumber(self.conversation and self.conversation.options and self.conversation.options.context)
       or tonumber(self.agent and self.agent.model_metadata and self.agent.model_metadata.context_window)
-    if not (total and context and context > 0) then return false end
     local threshold = tonumber(conf.auto_compact_threshold) or 0.85
-    if total / context < threshold then return false end
+    local threshold_triggered = context and context > 0 and total / context >= threshold
+    local max_input = tonumber(conf.auto_compact_max_input_tokens) or 0
+    local max_triggered = max_input > 0 and total >= max_input
+    if not (threshold_triggered or max_triggered) then return false end
     local min_new = tonumber(conf.auto_compact_min_new_messages) or 4
     local compacted_at = tonumber(self.conversation.local_compaction and self.conversation.local_compaction.message_count) or 0
     return #self.conversation.messages - compacted_at >= min_new
@@ -1217,25 +1340,45 @@ function PromptView:dispatch_prompt_turn(text)
       self.transcript:clear_partial_text()
     end
   end
+
+  ---Finish a streamed response that transitions into a user-facing request.
+  ---@param handler function
+  ---@param request table
+  local function handle_request_transition(handler, request)
+    local follow_bottom = (
+      self.streaming_transcript_follow_bottom == true
+      and not self.streaming_transcript_manual_scroll
+    )
+      or self:should_follow_streaming_transcript()
+    finalize_pending_assistant()
+    handler(request)
+    self:refresh()
+    if follow_bottom then
+      self.streaming_transcript_follow_bottom = true
+      self.streaming_transcript_manual_scroll = nil
+      self:scroll_streaming_transcript_to_bottom_when_ready()
+    end
+  end
+
   ---Handle response.
   local function handle_response(ok, err, response, meta)
     if generation ~= self.submit_generation then return end
     if ok and meta and meta.event == "user_input_request" and meta.request then
-      finalize_pending_assistant()
-      self:handle_user_input_request(meta.request)
-      self:refresh()
+      handle_request_transition(function(request)
+        self:handle_user_input_request(request)
+      end, meta.request)
       return
     end
     if ok and meta and meta.event == "approval_request" and meta.request then
-      finalize_pending_assistant()
-      self:handle_approval_request(meta.request)
-      self:refresh()
+      handle_request_transition(function(request)
+        self:handle_approval_request(request)
+      end, meta.request)
       return
     end
     if ok and meta and meta.event == "tool_call_request" and meta.request then
-      finalize_pending_assistant()
-      self:handle_tool_call_request(meta.request)
-      self:refresh()
+      handle_request_transition(function(request)
+        self:handle_tool_call_request(request)
+      end, meta.request)
       return
     end
     if ok and meta and meta.event == "implement_plan_request" and meta.request then
@@ -1408,23 +1551,121 @@ end
 ---@param request table
 function PromptView:handle_implement_plan_request(request)
   request = request or {}
-  MessageBox.warning(
-    request.title or "Implement Plan?",
-    request.body or "Switch to Implementation mode and start implementing the plan now?",
-    function(_, button_id)
-      if button_id == 1 then
-        self:set_collaboration_mode("implementation")
-        self:dispatch_prompt_turn(request.prompt
-          or "Implement the approved plan now. Use the plan from the conversation above as the implementation specification.")
+  self.pending_implement_plan_request = request
+  local function latest_plan_markdown()
+    for i = #self.conversation.messages, 1, -1 do
+      local msg = self.conversation.messages[i]
+      if msg.role == "assistant" and not (msg.meta and (
+        msg.meta.activity
+        or msg.meta.implement_plan_declined
+        or msg.meta.local_compaction_notice
+        or msg.meta.plan_memory_saved
+        or msg.meta.plan_update
+        or msg.meta.tool_result
+        or msg.meta.user_input_prompt
+      )) then
+        local text = tostring(msg.message or ""):match("^%s*(.-)%s*$")
+        if text ~= "" then return text end
+      end
+    end
+    return nil
+  end
+
+  local function plan_memory_title()
+    local title = tostring(self.conversation.title or ""):gsub("%s+", " "):match("^%s*(.-)%s*$")
+    if title == "" or title == "Assistant Session" then title = "Assistant Plan" end
+    if #title > 72 then title = title:sub(1, 69) .. "..." end
+    return "Plan: " .. title
+  end
+
+  local function ask_implement()
+    self:set_collaboration_mode("implementation")
+    self:dispatch_prompt_turn(request.prompt
+      or "Implement the approved plan now. Use the plan from the conversation above as the implementation specification.")
+  end
+
+  local content = latest_plan_markdown()
+  local function save_plan()
+    if not content then
+      core.error("Assistant: no plan was found to save")
+      return false
+    end
+    local memory = Conversation.add_memory(self.conversation.project_dir, plan_memory_title(), content)
+    if memory then
+      self.conversation.memories = Conversation.list_memories(self.conversation.project_dir)
+      self.conversation:add("assistant", "Plan saved to memory: " .. memory.title, {
+        meta = { plan_memory_saved = true }
+      })
+      return true
+    end
+    core.error("Assistant: could not save plan memory")
+    return false
+  end
+
+  local suggestions = {
+    {
+      text = "Implement Plan",
+      action = "implement",
+      info = "Switch to Implementation mode and start implementing."
+    },
+    {
+      text = "Save to Memory",
+      action = "save",
+      info = "Save the latest plan as a project memory."
+    },
+    {
+      text = "Both",
+      action = "both",
+      info = "Save the plan as memory, then start implementing."
+    },
+    {
+      text = "Cancel",
+      action = "cancel",
+      info = "Leave the plan unchanged."
+    }
+  }
+
+  core.command_view:enter("Plan action", {
+    show_suggestions = true,
+    typeahead = true,
+    suggest = function()
+      return suggestions
+    end,
+    validate = function(text, suggestion)
+      return suggestion ~= nil or suggestion_matches_text(suggestions, text) ~= nil
+    end,
+    submit = function(text, suggestion)
+      suggestion = suggestion or suggestion_matches_text(suggestions, text)
+      local active_request = self.pending_implement_plan_request
+      self.pending_implement_plan_request = nil
+      if not active_request then
+        self:refresh()
+        return
+      end
+      request = active_request
+      local action = suggestion and suggestion.action or "cancel"
+      if action == "implement" then
+        ask_implement()
+      elseif action == "save" then
+        save_plan()
+        self:refresh()
+      elseif action == "both" then
+        save_plan()
+        ask_implement()
       else
         self.conversation:add("assistant", "Plan implementation was not started.", {
           meta = { implement_plan_declined = true }
         })
+        self:refresh()
       end
-      self:refresh()
     end,
-    MessageBox.BUTTONS_YES_NO
-  )
+    cancel = function(explicit)
+      if not explicit then return end
+      self.pending_implement_plan_request = self.pending_implement_plan_request or request
+      core.warn("Assistant: plan action is still pending; run assistant-conversation:respond-to-request to answer it.")
+      self:refresh()
+    end
+  })
 end
 
 ---Handle generate conversation title from first prompt.
@@ -1708,6 +1949,10 @@ function PromptView:respond_to_pending_request()
     self:handle_approval_request(self.pending_approval_request)
     return true
   end
+  if self.pending_implement_plan_request then
+    self:handle_implement_plan_request(self.pending_implement_plan_request)
+    return true
+  end
   core.warn("Assistant: no pending request to answer")
   return false
 end
@@ -1725,6 +1970,7 @@ function PromptView:cancel()
   self.pending_user_input_request = nil
   self.pending_approval_request = nil
   self.pending_tool_call_request = nil
+  self.pending_implement_plan_request = nil
   if self.conversation and self.conversation.drop_unresolved_tool_calls then
     self.conversation:drop_unresolved_tool_calls({ autosave = false })
   end
@@ -2149,6 +2395,15 @@ function PromptView:on_mouse_moved(x, y, dx, dy)
     self.cursor = "arrow"
   end
   if self.prompt:scrollbar_dragging() or transcript_view:scrollbar_dragging() then
+    if transcript_view == self.transcript and transcript_view:scrollbar_dragging() then
+      if view_is_at_bottom(transcript_view) then
+        self.streaming_transcript_follow_bottom = true
+        self.streaming_transcript_manual_scroll = nil
+      else
+        self.streaming_transcript_follow_bottom = false
+        self.streaming_transcript_manual_scroll = true
+      end
+    end
     return true
   end
   return processed
@@ -2185,6 +2440,13 @@ function PromptView:on_mouse_wheel(y, x)
   if contains(transcript_view, mx, my) then
     if y and y ~= 0 then
       transcript_view.scroll.to.y = transcript_view.scroll.to.y + y * -config.mouse_wheel_scroll
+      if transcript_view == self.transcript and scroll_target_is_at_bottom(transcript_view) then
+        self.streaming_transcript_follow_bottom = true
+        self.streaming_transcript_manual_scroll = nil
+      elseif transcript_view == self.transcript then
+        self.streaming_transcript_follow_bottom = false
+        self.streaming_transcript_manual_scroll = true
+      end
     end
     if x and x ~= 0 then
       transcript_view.scroll.to.x = transcript_view.scroll.to.x + x * -config.mouse_wheel_scroll

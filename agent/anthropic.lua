@@ -192,7 +192,11 @@ local function convert_to_anthropic_format(agent, messages)
         table.insert(blocks, { type = "text", text = tostring(content) })
       end
       local last = anthropic_messages[#anthropic_messages]
-      if is_tool_result_blocks(blocks) and last and last.role == "user" then
+      if is_tool_result_blocks(blocks)
+        and last
+        and last.role == "user"
+        and is_tool_result_blocks(last.content)
+      then
         for _, block in ipairs(blocks) do
           table.insert(last.content, block)
         end
@@ -238,14 +242,8 @@ local function convert_to_anthropic_format(agent, messages)
     -- Tool result messages
     elseif role == "tool" then
       local tool_call_id = msg.tool_call_id or ""
-      local blocks = {}
       local text_content = tostring(content or "")
-      if text_content ~= "" then
-        table.insert(blocks, {
-          type = "text",
-          text = text_content
-        })
-      end
+      local blocks = {}
       table.insert(blocks, {
         type = "tool_result",
         tool_use_id = tool_call_id,
@@ -253,7 +251,7 @@ local function convert_to_anthropic_format(agent, messages)
       })
       -- Merge with previous user message if it exists and is a user message
       local last = anthropic_messages[#anthropic_messages]
-      if last and last.role == "user" then
+      if last and last.role == "user" and is_tool_result_blocks(last.content) then
         for _, block in ipairs(blocks) do
           table.insert(last.content, block)
         end
@@ -266,8 +264,167 @@ local function convert_to_anthropic_format(agent, messages)
     end
   end
 
+  local function tool_use_ids(message)
+    local ids = {}
+    if type(message) ~= "table"
+      or message.role ~= "assistant"
+      or type(message.content) ~= "table"
+    then
+      return ids
+    end
+    for _, block in ipairs(message.content) do
+      if type(block) == "table" and block.type == "tool_use" then
+        local id = tostring(block.id or "")
+        if id ~= "" then table.insert(ids, id) end
+      end
+    end
+    return ids
+  end
+
+  local function tool_result_ids(message)
+    local ids = {}
+    if type(message) ~= "table"
+      or message.role ~= "user"
+      or type(message.content) ~= "table"
+    then
+      return ids
+    end
+    for _, block in ipairs(message.content) do
+      if type(block) == "table" and block.type == "tool_result" then
+        local id = tostring(block.tool_use_id or "")
+        if id ~= "" then ids[id] = true end
+      end
+    end
+    return ids
+  end
+
+  local function has_tool_result(message)
+    return next(tool_result_ids(message)) ~= nil
+  end
+
+  local function all_results_present(ids, results)
+    if #ids == 0 then return false end
+    for _, id in ipairs(ids) do
+      if not results[id] then return false end
+    end
+    return true
+  end
+
+  local function content_without_tool_uses(message)
+    local content = {}
+    if type(message) ~= "table" or type(message.content) ~= "table" then
+      return content
+    end
+    for _, block in ipairs(message.content) do
+      if not (type(block) == "table" and block.type == "tool_use") then
+        table.insert(content, block)
+      end
+    end
+    return content
+  end
+
+  local function repair_tool_adjacency(messages)
+    local repaired = {}
+    local index = 1
+    while index <= #messages do
+      local message = messages[index]
+      local ids = tool_use_ids(message)
+      if #ids > 0 then
+        local assistant_content = {}
+        local required = {}
+        repeat
+          for _, block in ipairs(message.content or {}) do
+            table.insert(assistant_content, block)
+          end
+          for _, id in ipairs(tool_use_ids(message)) do
+            table.insert(required, id)
+          end
+          index = index + 1
+          message = messages[index]
+          ids = tool_use_ids(message)
+        until #ids == 0
+
+        local result_content = {}
+        local results = {}
+        while index <= #messages and has_tool_result(messages[index]) do
+          for _, block in ipairs(messages[index].content or {}) do
+            if type(block) == "table" and block.type == "tool_result" then
+              table.insert(result_content, block)
+              local id = tostring(block.tool_use_id or "")
+              if id ~= "" then results[id] = true end
+            end
+          end
+          index = index + 1
+        end
+
+        if all_results_present(required, results) then
+          table.insert(repaired, {
+            role = "assistant",
+            content = assistant_content
+          })
+          table.insert(repaired, {
+            role = "user",
+            content = result_content
+          })
+        else
+          local text_content = content_without_tool_uses({
+            role = "assistant",
+            content = assistant_content
+          })
+          if #text_content > 0 then
+            table.insert(repaired, {
+              role = "assistant",
+              content = text_content
+            })
+          end
+        end
+      elseif has_tool_result(message) then
+        index = index + 1
+      else
+        table.insert(repaired, message)
+        index = index + 1
+      end
+    end
+    return repaired
+  end
+
+  local function enforce_tool_adjacency(messages)
+    local repaired = {}
+    local index = 1
+    while index <= #messages do
+      local message = messages[index]
+      local ids = tool_use_ids(message)
+      if #ids > 0 then
+        local next_message = messages[index + 1]
+        local results = tool_result_ids(next_message)
+        if is_tool_result_blocks(next_message and next_message.content)
+          and all_results_present(ids, results)
+        then
+          table.insert(repaired, message)
+          table.insert(repaired, next_message)
+          index = index + 2
+        else
+          local text_content = content_without_tool_uses(message)
+          if #text_content > 0 then
+            table.insert(repaired, {
+              role = "assistant",
+              content = text_content
+            })
+          end
+          index = index + 1
+        end
+      elseif has_tool_result(message) then
+        index = index + 1
+      else
+        table.insert(repaired, message)
+        index = index + 1
+      end
+    end
+    return repaired
+  end
+
   local system_prompt = #system_parts > 0 and table.concat(system_parts, "\n\n") or nil
-  return anthropic_messages, system_prompt
+  return enforce_tool_adjacency(repair_tool_adjacency(anthropic_messages)), system_prompt
 end
 
 ---Build payload.

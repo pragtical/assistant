@@ -732,6 +732,30 @@ test.describe("assistant prompt view", function()
     test.equal(appended:find("world", 1, true) ~= nil, true)
   end)
 
+  test.it("keeps current scroll when appending rendered markdown away from bottom", function()
+    local agent = Ollama()
+    local conversation = Conversation(agent, "/tmp")
+    conversation:add("assistant", "hello", { autosave = false })
+    local view = PromptView({
+      agent = agent,
+      conversation = conversation
+    })
+    view.transcript.size.y = 100
+    view.transcript.get_scrollable_size = function()
+      return 1000
+    end
+    view.transcript.scroll.y = 250
+    view.transcript.scroll.to.y = 250
+    view.streaming_transcript_manual_scroll = true
+    view.streaming_transcript_follow_bottom = false
+
+    conversation:add("assistant", "world", { autosave = false })
+    view:refresh()
+
+    test.equal(view.transcript.scroll.y, 250)
+    test.equal(view.transcript.scroll.to.y, 250)
+  end)
+
   test.it("does not rebuild full transcript markdown for appended messages", function()
     local agent = Ollama()
     local conversation = Conversation(agent, "/tmp")
@@ -868,6 +892,133 @@ test.describe("assistant prompt view", function()
     test.equal(view.transcript.scroll.to.y, 900)
   end)
 
+  test.it("keeps manual scroll position across streamed refreshes", function()
+    local agent = Ollama()
+    local callback
+    local view = PromptView({
+      agent = agent,
+      conversation = Conversation(agent, "/tmp"),
+      backend = {
+        send = function(_, _, _, cb)
+          callback = cb
+        end
+      }
+    })
+    view.transcript.size.y = 100
+    view.transcript.get_scrollable_size = function()
+      return 1000
+    end
+    view.transcript.scroll.y = 900
+    view.transcript.scroll.to.y = 900
+
+    view.prompt_doc:insert(1, 1, "prompt")
+    view:submit()
+    callback(true, nil, "first.", { partial = true })
+
+    view.transcript.scroll.y = 200
+    view.transcript.scroll.to.y = 200
+    view.streaming_transcript_manual_scroll = true
+    view.streaming_transcript_follow_bottom = false
+    callback(true, nil, " second.", { partial = true })
+    view:refresh()
+
+    test.equal(view.transcript.scroll.y, 200)
+    test.equal(view.transcript.scroll.to.y, 200)
+  end)
+
+  test.it("uses target scroll when deciding whether long transcripts are at bottom", function()
+    local agent = Ollama()
+    local callback
+    local view = PromptView({
+      agent = agent,
+      conversation = Conversation(agent, "/tmp"),
+      backend = {
+        send = function(_, _, _, cb)
+          callback = cb
+        end
+      }
+    })
+    view.transcript.size.y = 100
+    view.transcript.get_scrollable_size = function()
+      return 100000
+    end
+    view.transcript.scroll.y = 99900
+    view.transcript.scroll.to.y = 99900
+
+    view.prompt_doc:insert(1, 1, "prompt")
+    view:submit()
+    callback(true, nil, "first.", { partial = true })
+
+    view.transcript.scroll.y = 99900
+    view.transcript.scroll.to.y = 99880
+    callback(true, nil, " second.", { partial = true })
+
+    test.equal(view.transcript.scroll.y, 99880)
+    test.equal(view.transcript.scroll.to.y, 99880)
+  end)
+
+  test.it("does not run deferred bottom scroll after manual scroll up", function()
+    local agent = Ollama()
+    local view = PromptView({
+      agent = agent,
+      conversation = Conversation(agent, "/tmp")
+    })
+    view.submit_generation = 1
+    view.streaming_transcript_follow_bottom = true
+    view.streaming_transcript_manual_scroll = true
+    view.transcript.size.y = 100
+    view.transcript.scroll.y = 200
+    view.transcript.scroll.to.y = 200
+    view.transcript.get_scrollable_size = function()
+      return 1000
+    end
+
+    view:scroll_streaming_transcript_to_bottom_when_ready()
+
+    test.equal(view.transcript.scroll.y, 200)
+    test.equal(view.transcript.scroll.to.y, 200)
+  end)
+
+  test.it("scrolls to bottom when submitting a prompt from history", function()
+    local agent = Ollama()
+    local conversation = Conversation(agent, "/tmp")
+    conversation:add("assistant", "previous", { autosave = false })
+    local view = PromptView({
+      agent = agent,
+      conversation = conversation,
+      backend = {
+        send = function() end
+      }
+    })
+    view:refresh()
+    view.transcript.size.y = 100
+    local phase = "before"
+    view.transcript.get_scrollable_size = function()
+      if phase == "submitted" then return 1200 end
+      return 1000
+    end
+    local original_append_text = view.transcript.append_text
+    view.transcript.append_text = function(this, text)
+      if tostring(text):find("## User", 1, true) then
+        phase = "submitted"
+      end
+      return original_append_text(this, text)
+    end
+    view.transcript.scroll.y = 250
+    view.transcript.scroll.to.y = 250
+
+    view.prompt_doc:insert(1, 1, "prompt")
+    view:submit()
+    run_core_threads_until(function()
+      return view.transcript.scroll.y == 1100
+    end)
+
+    test.equal(view.streaming_transcript_follow_bottom, true)
+    test.equal(view.streaming_transcript_manual_scroll, nil)
+    test.equal(view.transcript.scroll.y, 1100)
+    test.equal(view.transcript.scroll.to.y, 1100)
+  end)
+
   test.it("keeps following bottom when a prompt starts streaming", function()
     local agent = Ollama()
     local callback
@@ -959,6 +1110,37 @@ test.describe("assistant prompt view", function()
     test.equal(view.pending_assistant, nil)
     test.equal(view.transcript_markdown_text:find("## Assistant", 1, true) ~= nil, true)
     test.equal(view.transcript_markdown_text:find("hello **world**", 1, true) ~= nil, true)
+  end)
+
+  test.it("keeps current scroll when committing streamed assistant away from bottom", function()
+    local agent = Ollama()
+    local callback
+    local view = PromptView({
+      agent = agent,
+      conversation = Conversation(agent, "/tmp"),
+      backend = {
+        send = function(_, _, _, cb)
+          callback = cb
+        end
+      }
+    })
+    view.transcript.size.y = 100
+    view.transcript.get_scrollable_size = function()
+      return 1000
+    end
+
+    view.prompt_doc:insert(1, 1, "hello")
+    view:submit()
+    callback(true, nil, "hel", { partial = true })
+
+    view.transcript.scroll.y = 250
+    view.transcript.scroll.to.y = 250
+    view.streaming_transcript_manual_scroll = true
+    view.streaming_transcript_follow_bottom = false
+    callback(true, nil, "hello **world**", { done = true })
+
+    test.equal(view.transcript.scroll.y, 250)
+    test.equal(view.transcript.scroll.to.y, 250)
   end)
 
   test.it("keeps following bottom after streamed partial commit relayouts", function()
@@ -1084,6 +1266,91 @@ test.describe("assistant prompt view", function()
     end)
     core.frame_start = old_frame_start
 
+    test.equal(view.transcript.scroll.to.y, 1100)
+  end)
+
+  test.it("cancels deferred bottom scroll after manual scroll up", function()
+    local old_frame_start = core.frame_start
+    core.frame_start = 4500
+    local agent = Ollama()
+    local view = PromptView({
+      agent = agent,
+      conversation = Conversation(agent, "/tmp")
+    })
+    view.submit_generation = 1
+    view.streaming_transcript_follow_bottom = true
+    view.streaming_transcript_last_scroll_y = 900
+    view.transcript.size.y = 100
+    view.transcript.scroll.y = 900
+    view.transcript.scroll.to.y = 900
+    view.transcript.append_stale_frame = core.frame_start
+    view.transcript.stale_layout = {
+      width = 400,
+      height = 900,
+      content_width = 0,
+      commands = {},
+      anchors = {}
+    }
+    view.transcript.get_scrollable_size = function()
+      if view.transcript.append_stale_frame == core.frame_start then
+        return 1000
+      end
+      return 1200
+    end
+
+    view:scroll_streaming_transcript_to_bottom_when_ready()
+    view.transcript.scroll.y = 800
+    view.transcript.scroll.to.y = 800
+    view.streaming_transcript_manual_scroll = true
+    core.frame_start = 4501
+    run_core_threads_until(function()
+      return view.transcript.scroll.y == 800
+    end)
+    core.frame_start = old_frame_start
+
+    test.equal(view.transcript.scroll.y, 800)
+    test.equal(view.transcript.scroll.to.y, 800)
+  end)
+
+  test.it("keeps deferred bottom scroll after content shrink without manual scroll", function()
+    local old_frame_start = core.frame_start
+    core.frame_start = 4600
+    local agent = Ollama()
+    local view = PromptView({
+      agent = agent,
+      conversation = Conversation(agent, "/tmp")
+    })
+    view.submit_generation = 1
+    view.streaming_transcript_follow_bottom = true
+    view.streaming_transcript_last_scroll_y = 900
+    view.transcript.size.y = 100
+    view.transcript.scroll.y = 900
+    view.transcript.scroll.to.y = 900
+    view.transcript.append_stale_frame = core.frame_start
+    view.transcript.stale_layout = {
+      width = 400,
+      height = 900,
+      content_width = 0,
+      commands = {},
+      anchors = {}
+    }
+    view.transcript.get_scrollable_size = function()
+      if view.transcript.append_stale_frame == core.frame_start then
+        return 1000
+      end
+      return 1200
+    end
+
+    view:scroll_streaming_transcript_to_bottom_when_ready()
+    view.transcript.scroll.y = 800
+    view.transcript.scroll.to.y = 800
+    core.frame_start = 4601
+    run_core_threads_until(function()
+      return view.transcript.scroll.y == 1100
+    end)
+    core.frame_start = old_frame_start
+
+    test.equal(view.transcript.scroll.y, 1100)
     test.equal(view.transcript.scroll.to.y, 1100)
   end)
 
@@ -1486,8 +1753,12 @@ test.describe("assistant prompt view", function()
     local old_auto_compact = config.plugins.assistant.auto_compact
     local old_threshold = config.plugins.assistant.auto_compact_threshold
     local old_min_new = config.plugins.assistant.auto_compact_min_new_messages
+    local old_min_input = config.plugins.assistant.auto_compact_min_input_tokens
+    local old_max_input = config.plugins.assistant.auto_compact_max_input_tokens
     config.plugins.assistant.auto_compact = true
     config.plugins.assistant.auto_compact_threshold = 0.5
+    config.plugins.assistant.auto_compact_min_input_tokens = 0
+    config.plugins.assistant.auto_compact_max_input_tokens = 0
     config.plugins.assistant.auto_compact_min_new_messages = 1
 
     local agent = Ollama()
@@ -1519,10 +1790,100 @@ test.describe("assistant prompt view", function()
     config.plugins.assistant.auto_compact = old_auto_compact
     config.plugins.assistant.auto_compact_threshold = old_threshold
     config.plugins.assistant.auto_compact_min_new_messages = old_min_new
+    config.plugins.assistant.auto_compact_min_input_tokens = old_min_input
+    config.plugins.assistant.auto_compact_max_input_tokens = old_max_input
 
     test.equal(compacted_before_send, true)
     test.equal(sent_after_compaction, true)
     test.equal(view.conversation:last().message, "done")
+  end)
+
+  test.it("does not auto-compact below minimum input tokens", function()
+    local old_auto_compact = config.plugins.assistant.auto_compact
+    local old_threshold = config.plugins.assistant.auto_compact_threshold
+    local old_min_new = config.plugins.assistant.auto_compact_min_new_messages
+    local old_min_input = config.plugins.assistant.auto_compact_min_input_tokens
+    local old_max_input = config.plugins.assistant.auto_compact_max_input_tokens
+    config.plugins.assistant.auto_compact = true
+    config.plugins.assistant.auto_compact_threshold = 0.5
+    config.plugins.assistant.auto_compact_min_input_tokens = 1000
+    config.plugins.assistant.auto_compact_max_input_tokens = 0
+    config.plugins.assistant.auto_compact_min_new_messages = 1
+
+    local agent = Ollama()
+    local conversation = Conversation(agent, "/tmp")
+    conversation:set_usage({ total_tokens = 900, context = 1000 })
+    local compacted = false
+    local sent = false
+    local view = PromptView({
+      agent = agent,
+      conversation = conversation,
+      backend = {
+        local_compact = function(_, _, _, callback)
+          compacted = true
+          callback(true)
+        end,
+        send = function(_, _, _, callback)
+          sent = true
+          callback(true, nil, "done", { done = true })
+        end
+      }
+    })
+
+    view.prompt_doc:insert(1, 1, "continue")
+    view:submit()
+
+    config.plugins.assistant.auto_compact = old_auto_compact
+    config.plugins.assistant.auto_compact_threshold = old_threshold
+    config.plugins.assistant.auto_compact_min_new_messages = old_min_new
+    config.plugins.assistant.auto_compact_min_input_tokens = old_min_input
+    config.plugins.assistant.auto_compact_max_input_tokens = old_max_input
+
+    test.equal(compacted, false)
+    test.equal(sent, true)
+  end)
+
+  test.it("auto-compacts when maximum input tokens are reached", function()
+    local old_auto_compact = config.plugins.assistant.auto_compact
+    local old_threshold = config.plugins.assistant.auto_compact_threshold
+    local old_min_new = config.plugins.assistant.auto_compact_min_new_messages
+    local old_min_input = config.plugins.assistant.auto_compact_min_input_tokens
+    local old_max_input = config.plugins.assistant.auto_compact_max_input_tokens
+    config.plugins.assistant.auto_compact = true
+    config.plugins.assistant.auto_compact_threshold = 0.9
+    config.plugins.assistant.auto_compact_min_input_tokens = 0
+    config.plugins.assistant.auto_compact_max_input_tokens = 150
+    config.plugins.assistant.auto_compact_min_new_messages = 1
+
+    local agent = Ollama()
+    local conversation = Conversation(agent, "/tmp")
+    conversation:set_usage({ total_tokens = 200, context = 1000 })
+    local compacted = false
+    local view = PromptView({
+      agent = agent,
+      conversation = conversation,
+      backend = {
+        local_compact = function(_, got_agent, got_conversation, callback)
+          compacted = got_agent == agent and got_conversation == conversation
+          got_conversation:record_local_compaction("Earlier turns summarized.")
+          callback(true)
+        end,
+        send = function(_, _, _, callback)
+          callback(true, nil, "done", { done = true })
+        end
+      }
+    })
+
+    view.prompt_doc:insert(1, 1, "continue")
+    view:submit()
+
+    config.plugins.assistant.auto_compact = old_auto_compact
+    config.plugins.assistant.auto_compact_threshold = old_threshold
+    config.plugins.assistant.auto_compact_min_new_messages = old_min_new
+    config.plugins.assistant.auto_compact_min_input_tokens = old_min_input
+    config.plugins.assistant.auto_compact_max_input_tokens = old_max_input
+
+    test.equal(compacted, true)
   end)
 
 
@@ -2005,10 +2366,10 @@ test.describe("assistant prompt view", function()
         }
       }
     })
-    conversation:add("activity", "Running command\n\nTool: `exec_command`\nStatus: requested", {
+    conversation:add("activity", "Running command\n\nTool: `exec_command`", {
       autosave = false,
       meta = {
-        http_activity_key = "tool:exec_command:requested:call_cancelled"
+        http_activity_key = "tool:exec_command:call_cancelled"
       }
     })
     local view = PromptView({
@@ -2230,12 +2591,13 @@ test.describe("assistant prompt view", function()
 
     view.prompt_doc:insert(1, 1, "hello")
     view:submit()
-    conversation:add("activity", "Inspecting project\n\nTool: `read`\nPath: `/tmp/main.c`\nStatus: requested", {
+    conversation:add("activity", "Inspecting project\n\nTool: `read`\nPath: `/tmp/main.c`", {
       autosave = false
     })
     callback(true, nil, "", { event = "activity_update", partial = true })
 
-    test.equal(view.transcript_markdown_text:find("**Reading**: `/tmp/main.c` (requested)", 1, true) ~= nil, true)
+    test.equal(view.transcript_markdown_text:find("**Reading**: `/tmp/main.c`", 1, true) ~= nil, true)
+    test.equal(view.transcript_markdown_text:find("(requested)", 1, true), nil)
     test.equal(view.conversation:to_markdown():find("## Assistant", 1, true), nil)
   end)
 
@@ -2289,7 +2651,40 @@ test.describe("assistant prompt view", function()
     test.equal(clear_partial_calls, 0)
   end)
 
-  test.it("keeps streamed reasoning partial visible until commit replacement renders", function()
+  test.it("keeps current scroll when receiving streamed reasoning away from bottom", function()
+    local agent = Codex()
+    local callback
+    local conversation = Conversation(agent, "/tmp")
+    local view = PromptView({
+      agent = agent,
+      conversation = conversation,
+      backend = {
+        send = function(_, _, _, cb)
+          callback = cb
+        end
+      }
+    })
+    view.transcript.size.y = 100
+    view.transcript.get_scrollable_size = function()
+      return 1000
+    end
+
+    view.prompt_doc:insert(1, 1, "hello")
+    view:submit()
+    view.transcript.scroll.y = 250
+    view.transcript.scroll.to.y = 250
+    view.streaming_transcript_manual_scroll = true
+    view.streaming_transcript_follow_bottom = false
+    conversation:add("activity", "Reasoning\n\nThinking through the plan", {
+      autosave = false
+    })
+    callback(true, nil, "", { event = "activity_update", partial = true })
+
+    test.equal(view.transcript.scroll.y, 250)
+    test.equal(view.transcript.scroll.to.y, 250)
+  end)
+
+  test.it("commits streamed reasoning through partial text path", function()
     local agent = Codex()
     local callback
     local conversation = Conversation(agent, "/tmp")
@@ -2303,27 +2698,37 @@ test.describe("assistant prompt view", function()
       }
     })
 
-    local set_text_partial
+    local committed_partial
+    local set_text_calls = 0
     local clear_partial_calls = 0
     view.transcript.clear_partial_text = function(this)
       clear_partial_calls = clear_partial_calls + 1
       this.partial_text = nil
     end
-    local original_set_text = view.transcript.set_text
-    view.transcript.set_text = function(this, text)
-      set_text_partial = this.partial_text
-      return original_set_text(this, text)
+    view.transcript.commit_partial_text = function(this, text)
+      committed_partial = {
+        text = text,
+        previous_partial = this.partial_text
+      }
+      this.partial_text = nil
+      return true
+    end
+    view.transcript.set_text = function()
+      set_text_calls = set_text_calls + 1
     end
 
     view.prompt_doc:insert(1, 1, "hello")
     view:submit()
+    set_text_calls = 0
     conversation:add("activity", "Reasoning\n\nThinking through the plan", {
       autosave = false
     })
     callback(true, nil, "", { event = "activity_update", partial = true })
     callback(true, nil, "", { event = "activity_update", done = true })
 
-    test.equal(set_text_partial, "Thinking through the plan")
+    test.equal(committed_partial.previous_partial, "Thinking through the plan")
+    test.equal(committed_partial.text, "Thinking through the plan")
+    test.equal(set_text_calls, 0)
     test.equal(clear_partial_calls, 0)
   end)
 
@@ -2352,7 +2757,7 @@ test.describe("assistant prompt view", function()
     view:submit()
     callback(true, nil, "partial", { partial = true })
     set_text_calls = 0
-    conversation:add("activity", "Inspecting project\n\nTool: `read`\nPath: `/tmp/main.c`\nStatus: requested", {
+    conversation:add("activity", "Inspecting project\n\nTool: `read`\nPath: `/tmp/main.c`", {
       autosave = false
     })
     callback(true, nil, "", { event = "activity_update", partial = true })
@@ -2581,6 +2986,99 @@ test.describe("assistant prompt view", function()
     test.equal(view.transcript_markdown_text:find("## Assistant\n\nto give you a good overview.", 1, true), nil)
   end)
 
+  test.it("keeps transcript following bottom when streamed text becomes a tool request", function()
+    local old_enter = core.command_view.enter
+    core.command_view.enter = function() end
+
+    local agent = Ollama()
+    local callback
+    local view = PromptView({
+      agent = agent,
+      conversation = Conversation(agent, "/tmp"),
+      backend = {
+        send = function(_, _, _, cb)
+          callback = cb
+        end,
+        resolve_tool_call = function() end
+      }
+    })
+
+    view.prompt_doc:insert(1, 1, "inspect")
+    view:submit()
+    callback(true, nil, "Let me inspect", { partial = true })
+    view.streaming_transcript_follow_bottom = true
+    local scrolls = 0
+    view.scroll_streaming_transcript_to_bottom_when_ready = function(this)
+      scrolls = scrolls + 1
+      this.streaming_transcript_last_scroll_y = 100
+    end
+    view.conversation:add("tool_call", "Tool: read", { autosave = false })
+    callback(true, nil, nil, {
+      event = "tool_call_request",
+      request = {
+        id = "call_1",
+        title = "Approve tool",
+        body = "Tool: read"
+      }
+    })
+
+    core.command_view.enter = old_enter
+
+    test.equal(scrolls >= 1, true)
+    test.equal(view.streaming_transcript_follow_bottom, true)
+  end)
+
+  test.it("keeps current scroll when tool request arrives after manual scroll up", function()
+    local old_enter = core.command_view.enter
+    core.command_view.enter = function() end
+
+    local agent = Ollama()
+    local callback
+    local view = PromptView({
+      agent = agent,
+      conversation = Conversation(agent, "/tmp"),
+      backend = {
+        send = function(_, _, _, cb)
+          callback = cb
+        end,
+        resolve_tool_call = function() end
+      }
+    })
+    view.transcript.size.y = 100
+    view.transcript.get_scrollable_size = function()
+      return 1000
+    end
+    view.transcript.scroll.y = 900
+    view.transcript.scroll.to.y = 900
+
+    view.prompt_doc:insert(1, 1, "inspect")
+    view:submit()
+    callback(true, nil, "Let me inspect", { partial = true })
+    view.transcript.scroll.y = 250
+    view.transcript.scroll.to.y = 250
+    view.streaming_transcript_follow_bottom = false
+    view.streaming_transcript_manual_scroll = true
+    local scrolls = 0
+    view.scroll_streaming_transcript_to_bottom_when_ready = function()
+      scrolls = scrolls + 1
+    end
+    view.conversation:add("tool_call", "Tool: read", { autosave = false })
+    callback(true, nil, nil, {
+      event = "tool_call_request",
+      request = {
+        id = "call_1",
+        title = "Approve tool",
+        body = "Tool: read"
+      }
+    })
+
+    core.command_view.enter = old_enter
+
+    test.equal(scrolls, 0)
+    test.equal(view.transcript.scroll.y, 250)
+    test.equal(view.transcript.scroll.to.y, 250)
+  end)
+
   test.it("does not add an error message for cancelled requests", function()
     local agent = Codex()
     local callback
@@ -2787,12 +3285,16 @@ test.describe("assistant prompt view", function()
     test.equal(resolved.decision, "accept")
   end)
 
-  test.it("switches to implementation mode when implement_plan is accepted", function()
-    local old_warning = MessageBox.warning
-    MessageBox.warning = function(title, body, callback)
-      test.equal(title, "Implement Plan?")
-      test.equal(body:find("start implementing", 1, true) ~= nil, true)
-      callback(nil, 1)
+  test.it("switches to implementation mode when implement plan action is selected", function()
+    local old_enter = core.command_view.enter
+    core.command_view.enter = function(_, label, options)
+      test.equal(label, "Plan action")
+      local suggestions = options.suggest("")
+      test.equal(suggestions[1].text, "Implement Plan")
+      test.equal(suggestions[2].text, "Save to Memory")
+      test.equal(suggestions[3].text, "Both")
+      test.equal(suggestions[4].text, "Cancel")
+      options.submit("Implement Plan", suggestions[1])
     end
 
     local agent = Ollama()
@@ -2819,7 +3321,7 @@ test.describe("assistant prompt view", function()
       prompt = "Implement this approved plan."
     })
 
-    MessageBox.warning = old_warning
+    core.command_view.enter = old_enter
     test.equal(conversation.collaboration_mode, "implementation")
     test.equal(sent.agent, agent)
     test.equal(sent.conversation, conversation)
@@ -2827,6 +3329,138 @@ test.describe("assistant prompt view", function()
     test.equal(conversation.messages[#conversation.messages - 1].message, "Implement this approved plan.")
     test.equal(conversation.messages[#conversation.messages].role, "assistant")
     test.equal(conversation.messages[#conversation.messages].message, "done")
+  end)
+
+  test.it("can save a plan memory and start implementation from plan action", function()
+    local old_enter = core.command_view.enter
+    core.command_view.enter = function(_, label, options)
+      test.equal(label, "Plan action")
+      local suggestions = options.suggest("")
+      options.submit("Both", suggestions[3])
+    end
+
+    local agent = Ollama()
+    local root = assistant_test_temp_path("plan-memory")
+    local conversation = Conversation(agent, root)
+    conversation.title = "Socket Refactor"
+    conversation.collaboration_mode = "plan"
+    conversation:add("assistant", "### Plan\n\n1. Inspect sockets.\n2. Patch transport.", { autosave = false })
+    local view = PromptView({
+      agent = agent,
+      conversation = conversation,
+      backend = {
+        send = function(_, _, _, callback)
+          callback(true, nil, "done", { done = true })
+        end
+      }
+    })
+
+    view:handle_implement_plan_request({
+      title = "Implement Plan?",
+      body = "Switch modes and start implementing?",
+      prompt = "Implement this approved plan."
+    })
+
+    core.command_view.enter = old_enter
+
+    local memories = Conversation.list_memories(root)
+    test.equal(#memories, 1)
+    test.equal(memories[1].title, "Plan: Socket Refactor")
+    test.equal(memories[1].content:find("Inspect sockets.", 1, true) ~= nil, true)
+    test.equal(conversation.collaboration_mode, "implementation")
+  end)
+
+  test.it("uses plan action selector for implement_plan tool events", function()
+    local old_enter = core.command_view.enter
+    local entered = false
+    core.command_view.enter = function(_, label, options)
+      entered = true
+      test.equal(label, "Plan action")
+      local suggestions = options.suggest("")
+      options.submit("Cancel", suggestions[4])
+    end
+
+    local agent = Ollama()
+    local callback
+    local conversation = Conversation(agent, "/tmp")
+    conversation.collaboration_mode = "plan"
+    local view = PromptView({
+      agent = agent,
+      conversation = conversation,
+      backend = {
+        send = function(_, _, _, cb)
+          callback = cb
+        end
+      }
+    })
+
+    view.prompt_doc:insert(1, 1, "draft a plan")
+    view:submit()
+    callback(true, nil, nil, {
+      event = "implement_plan_request",
+      request = {
+        title = "Implement Plan?",
+        body = "Switch modes and start implementing?",
+        prompt = "Implement this approved plan."
+      }
+    })
+
+    core.command_view.enter = old_enter
+
+    test.equal(entered, true)
+    test.equal(conversation.collaboration_mode, "plan")
+    test.equal(conversation.messages[#conversation.messages].meta.implement_plan_declined, true)
+  end)
+
+  test.it("reopens pending plan action after command view cancel", function()
+    local old_enter = core.command_view.enter
+    local enters = 0
+    core.command_view.enter = function(_, label, options)
+      enters = enters + 1
+      test.equal(label, "Plan action")
+      local suggestions = options.suggest("")
+      if enters == 1 then
+        options.cancel(true)
+      else
+        options.submit("Implement Plan", suggestions[1])
+      end
+    end
+
+    local agent = Ollama()
+    local conversation = Conversation(agent, "/tmp")
+    conversation.collaboration_mode = "plan"
+    local sent
+    local view = PromptView({
+      agent = agent,
+      conversation = conversation,
+      backend = {
+        send = function(_, got_agent, got_conversation, callback)
+          sent = {
+            agent = got_agent,
+            conversation = got_conversation
+          }
+          callback(true, nil, "done", { done = true })
+        end
+      }
+    })
+
+    view:handle_implement_plan_request({
+      title = "Implement Plan?",
+      body = "Switch modes and start implementing?",
+      prompt = "Implement this approved plan."
+    })
+    local pending = view.pending_implement_plan_request
+    local responded = view:respond_to_pending_request()
+
+    core.command_view.enter = old_enter
+
+    test.equal(pending.prompt, "Implement this approved plan.")
+    test.equal(responded, true)
+    test.equal(enters, 2)
+    test.equal(view.pending_implement_plan_request, nil)
+    test.equal(conversation.collaboration_mode, "implementation")
+    test.equal(sent.agent, agent)
+    test.equal(sent.conversation, conversation)
   end)
 
   test.it("resolves burst approval dialogs against their original requests", function()

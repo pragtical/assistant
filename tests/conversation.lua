@@ -498,6 +498,32 @@ test.describe("assistant conversation", function()
     test.not_nil(loaded.local_compaction.context_snapshot)
   end)
 
+  test.it("stores local compaction summaries as memories", function()
+    local conversation = Conversation(Ollama(), root)
+    conversation.title = "Tetris Sound Effects"
+    conversation:add("user", "Old question", { autosave = false })
+    conversation:record_local_compaction("Persisted summary.", { trigger = "manual" })
+
+    local memories = Conversation.list_memories(root)
+    test.equal(#memories, 1)
+    test.equal(memories[1].title, "Compacted Conversation: Tetris Sound Effects")
+    test.equal(memories[1].content:find("Trigger: manual", 1, true) ~= nil, true)
+    test.equal(memories[1].content:find("Persisted summary.", 1, true) ~= nil, true)
+    test.equal(memories[1].meta.local_compaction, true)
+    test.equal(memories[1].meta.local_compaction_conversation_id, conversation.id)
+    test.equal(memories[1].meta.local_compaction_trigger, "manual")
+    test.equal(conversation.local_compaction.memory_id, memories[1].id)
+
+    conversation:record_local_compaction("Updated summary.", { trigger = "auto" })
+
+    memories = Conversation.list_memories(root)
+    test.equal(#memories, 1)
+    test.equal(memories[1].content:find("Trigger: auto", 1, true) ~= nil, true)
+    test.equal(memories[1].content:find("Updated summary.", 1, true) ~= nil, true)
+    test.equal(memories[1].meta.local_compaction_trigger, "auto")
+    test.equal(conversation.local_compaction.memory_id, memories[1].id)
+  end)
+
   test.it("tracks context left from provider usage", function()
     local conversation = Conversation(Ollama(), root)
     conversation.options.context = 100
