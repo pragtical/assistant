@@ -1101,6 +1101,196 @@ local function scan_dir(path, text, search_type, out, state)
   return true
 end
 
+local threaded_file_tool_id = 0
+
+local function next_threaded_file_tool_id()
+  threaded_file_tool_id = threaded_file_tool_id + 1
+  return threaded_file_tool_id
+end
+
+local function thread_available()
+  return type(thread) == "table"
+    and type(thread.create) == "function"
+    and type(thread.get_channel) == "function"
+end
+
+local function threaded_search_coordinator(tool_id, root, text, search_type, pathsep, workers, max_results)
+  local function worker_find_in_file(tool_id, worker_id, text, search_type, max_results)
+    local jobs = thread.get_channel("assistant_search_jobs_" .. tool_id .. "_" .. worker_id)
+    local results = thread.get_channel("assistant_search_results_" .. tool_id .. "_" .. worker_id)
+    local stop = thread.get_channel("assistant_search_stop_" .. tool_id)
+
+    local function line_matches(line)
+      if search_type == "regex" and regex then
+        return regex.match(text, line) ~= nil
+      elseif search_type == "luapattern" then
+        return line:find(text) ~= nil
+      end
+      return line:find(text, 1, true) ~= nil
+    end
+
+    local function looks_binary(data)
+      if type(data) ~= "string" then return false end
+      if data:find("%z") then return true end
+      local limit = math.min(#data, 8192)
+      if limit == 0 then return false end
+      local controls = 0
+      for i = 1, limit do
+        local byte = data:byte(i)
+        if byte < 0x20 and byte ~= 0x09 and byte ~= 0x0a and byte ~= 0x0c and byte ~= 0x0d then
+          controls = controls + 1
+        end
+      end
+      return controls / limit > 0.05
+    end
+
+    local path = jobs:wait()
+    while path ~= "{{stop}}" do
+      if stop:first() == "stop" then break end
+      local out = {}
+      local handle = io.open(path, "rb")
+      if handle then
+        local data = handle:read("*a")
+        handle:close()
+        if data and not looks_binary(data) then
+          local line_no = 1
+          for line in (data .. "\n"):gmatch("(.-)\n") do
+            if line_matches(line) then
+              local limited_line = line
+              if #limited_line > 2000 then
+                limited_line = limited_line:sub(1, 2000) .. "...[truncated]"
+              end
+              table.insert(out, string.format("%s:%d:%s", path, line_no, limited_line))
+              if #out >= max_results then break end
+            end
+            line_no = line_no + 1
+          end
+        end
+      end
+      results:push(#out > 0 and out or true)
+      jobs:pop()
+      path = jobs:wait()
+    end
+    results:push("finished")
+  end
+
+  local status = thread.get_channel("assistant_search_status_" .. tool_id)
+  local stop = thread.get_channel("assistant_search_stop_" .. tool_id)
+  local jobs = {}
+  local worker_threads = {}
+  for worker_id = 1, workers do
+    jobs[worker_id] = thread.get_channel("assistant_search_jobs_" .. tool_id .. "_" .. worker_id)
+    worker_threads[worker_id] = thread.create(
+      "assearchw" .. tool_id .. "_" .. worker_id,
+      worker_find_in_file,
+      tool_id,
+      worker_id,
+      text,
+      search_type,
+      max_results
+    )
+  end
+
+  local directories = { root }
+  local current_worker = 1
+  local scanned = 0
+  while #directories > 0 and stop:first() ~= "stop" do
+    local directory = table.remove(directories, 1)
+    for _, name in ipairs(system.list_dir(directory) or {}) do
+      if name ~= ".git" and name ~= ".pragtical" then
+        local child = directory .. pathsep .. name
+        local info = system.get_file_info(child)
+        scanned = scanned + 1
+        if info and info.type == "dir" then
+          table.insert(directories, child)
+        elseif info and info.type == "file" then
+          jobs[current_worker]:push(child)
+          current_worker = current_worker + 1
+          if current_worker > workers then current_worker = 1 end
+        end
+      end
+    end
+    if scanned % 200 == 0 then
+      status:clear()
+      status:push(scanned)
+    end
+  end
+
+  for worker_id = 1, workers do
+    jobs[worker_id]:push("{{stop}}")
+  end
+  for _, worker in ipairs(worker_threads) do
+    if worker then worker:wait() end
+  end
+  status:clear()
+  status:push("finished")
+end
+
+local function drain_threaded_search_results(tool_id, workers, out, max_results)
+  if #out >= max_results then return false, true end
+  local found = false
+  for worker_id = 1, workers do
+    local channel = thread.get_channel("assistant_search_results_" .. tool_id .. "_" .. worker_id)
+    local value = channel:first()
+    while value do
+      channel:pop()
+      if type(value) == "table" then
+        for _, line in ipairs(value) do
+          if #out >= max_results then return true, true end
+          table.insert(out, line)
+          if #out >= max_results then return true, true end
+        end
+      end
+      found = true
+      value = channel:first()
+    end
+  end
+  return found, false
+end
+
+local function threaded_scan_dir(path, text, search_type, out)
+  if not thread_available() then return scan_dir(path, text, search_type, out) end
+  local tool_id = next_threaded_file_tool_id()
+  local workers = math.max(1, math.min(8, math.ceil((thread.get_cpu_count() or 2) / 2)))
+  local max_results = 200
+  local coordinator = thread.create(
+    "assearch" .. tool_id,
+    threaded_search_coordinator,
+    tool_id,
+    path,
+    text,
+    search_type,
+    PATHSEP,
+    workers,
+    max_results
+  )
+  if not coordinator then return scan_dir(path, text, search_type, out) end
+  local status = thread.get_channel("assistant_search_status_" .. tool_id)
+  local stop = thread.get_channel("assistant_search_stop_" .. tool_id)
+  local done = false
+  while not done do
+    local _, full = drain_threaded_search_results(tool_id, workers, out, max_results)
+    if full then
+      stop:push("stop")
+      done = true
+    end
+    local value = status:first()
+    if value == "finished" then
+      status:pop()
+      done = true
+    elseif value ~= nil then
+      status:pop()
+    end
+    context.yield_ui()
+  end
+  while drain_threaded_search_results(tool_id, workers, out, max_results) do
+    context.yield_ui()
+  end
+  coordinator:wait()
+  stop:clear()
+  return #out < max_results
+end
+
 ---List dir.
 ---@param path string
 ---@param recursive boolean
@@ -1136,6 +1326,82 @@ local function list_dir(path, recursive, pattern, out, state)
   return true
 end
 
+local function threaded_list_worker(tool_id, root, recursive, pattern, max_results, output_limit, pathsep)
+  if pattern == false then pattern = nil end
+  local output = thread.get_channel("assistant_list_results_" .. tool_id)
+  local directories = { root }
+  local count = 0
+  local bytes = 0
+  local batch = {}
+  while #directories > 0 do
+    local directory = table.remove(directories, 1)
+    for _, name in ipairs(system.list_dir(directory) or {}) do
+      if name ~= ".git" and name ~= ".pragtical" then
+        local child = directory .. pathsep .. name
+        local info = system.get_file_info(child)
+        if not pattern or child:find(pattern, 1, true) or name:find(pattern, 1, true) then
+          table.insert(batch, child)
+          count = count + 1
+          bytes = bytes + #child + 1
+          if #batch >= 200 then
+            output:push(batch)
+            batch = {}
+          end
+          if count >= max_results or bytes >= output_limit then
+            output:push(batch)
+            output:push(bytes >= output_limit and "output_limit" or "max_results")
+            return
+          end
+        end
+        if recursive and info and info.type == "dir" then
+          table.insert(directories, child)
+        end
+      end
+    end
+  end
+  if #batch > 0 then output:push(batch) end
+  output:push("finished")
+end
+
+local function threaded_list_dir(path, recursive, pattern, out, state)
+  if not thread_available() then return list_dir(path, recursive, pattern, out, state) end
+  local tool_id = next_threaded_file_tool_id()
+  local worker = thread.create(
+    "aslist" .. tool_id,
+    threaded_list_worker,
+    tool_id,
+    path,
+    recursive,
+    pattern or false,
+    state.max,
+    state.output_limit,
+    PATHSEP
+  )
+  if not worker then return list_dir(path, recursive, pattern, out, state) end
+  local output = thread.get_channel("assistant_list_results_" .. tool_id)
+  local done = false
+  while not done do
+    local value = output:first()
+    if type(value) == "table" then
+      for _, item in ipairs(value) do
+        table.insert(out, item)
+      end
+      output:pop()
+    elseif value == "output_limit" then
+      state.truncated = "output limit"
+      output:pop()
+      done = true
+    elseif value == "max_results" or value == "finished" then
+      output:pop()
+      done = true
+    end
+    context.yield_ui()
+  end
+  worker:wait()
+  output:clear()
+  return state.truncated == nil
+end
+
 ---Search for text in files below a project directory.
 ---@param directory string
 ---@param text string
@@ -1160,7 +1426,7 @@ function filetools.search(directory, text, search_type)
     end
   end
   local results = {}
-  scan_dir(path, text or "", search_type, results)
+  threaded_scan_dir(path, text or "", search_type, results)
   if #results == 0 then
     if narrowed_note then
       return narrowed_note .. "\nNo results for the exact old value."
@@ -1192,7 +1458,7 @@ function filetools.list(directory, recursive, max_results, pattern)
     bytes = 0,
     output_limit = context.OUTPUT_LIMIT
   }
-  list_dir(path, recursive == true or recursive == "true", context.optional_text(pattern), results, state)
+  threaded_list_dir(path, recursive == true or recursive == "true", context.optional_text(pattern), results, state)
   table.sort(results)
   if #results == 0 then return "No files." end
   local output = table.concat(results, "\n")
