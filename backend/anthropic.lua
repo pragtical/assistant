@@ -93,6 +93,40 @@ end
 
 local contains_completed_plan = stream_state.contains_completed_plan
 
+---Handle conversation has completed plan.
+local function conversation_has_completed_plan(conversation)
+  for _, message in ipairs(conversation and conversation.messages or {}) do
+    if message.role == "assistant" and contains_completed_plan(message.message) then
+      return true
+    end
+  end
+  return false
+end
+
+---Handle sanitize plan response.
+local function sanitize_plan_response(text)
+  text = tostring(text or "")
+  if text == "" then return text end
+  local open_tag = stream_state.OPEN_PROPOSED_PLAN_TAG
+  local close_tag = stream_state.CLOSE_PROPOSED_PLAN_TAG
+  local open_at = text:find(open_tag, 1, true)
+  local close_at = text:find(close_tag, open_at and (open_at + #open_tag) or 1, true)
+  if open_at and close_at then
+    text = text:sub(open_at + #open_tag, close_at - 1)
+  end
+  local patterns = {
+    "\n+%s*%**Ready to implement%?%**%s*.*$",
+    "\n+%s*Shall I proceed[^?\n]*%?%s*$",
+    "\n+%s*Should I proceed[^?\n]*%?%s*$",
+    "\n+%s*Would you like me to proceed[^?\n]*%?%s*$",
+    "\n+%s*Do you want me to proceed[^?\n]*%?%s*$"
+  }
+  for _, pattern in ipairs(patterns) do
+    text = text:gsub(pattern, "")
+  end
+  return text:match("^%s*(.-)%s*$") or text
+end
+
 ---Handle should show tool preamble.
 local function should_show_tool_preamble(text)
   text = tostring(text or ""):match("^%s*(.-)%s*$") or ""
@@ -100,6 +134,35 @@ local function should_show_tool_preamble(text)
   if text:find("\n") then return true end
   if text:find("[%.%!%?:]") then return true end
   return #text >= 40
+end
+
+---Handle looks like text tool call.
+local function looks_like_text_tool_call(text)
+  text = tostring(text or ""):match("^%s*(.-)%s*$") or ""
+  if text == "" then return false end
+  text = text:gsub("&lt;", "<"):gsub("&gt;", ">")
+  return text:find("^<function_calls>", 1, true) ~= nil
+    or text:find("^<tool_call>", 1, true) ~= nil
+    or text:find("^<｜｜DSML｜｜tool_calls>", 1, true) ~= nil
+    or text:find("^<||DSML||tool_calls>", 1, true) ~= nil
+    or text:find("^<invoke%s+name%s*=") ~= nil
+    or text:find("^<function%s*=") ~= nil
+end
+
+---Handle strip text tool call blocks.
+---@param text string
+---@return string
+local function strip_text_tool_call_blocks(text)
+  text = tostring(text or "")
+  if text == "" then return "" end
+  text = text:gsub("&lt;", "<"):gsub("&gt;", ">")
+  text = text:gsub("<tool_call%s*>.-</tool_call%s*>", "")
+  text = text:gsub("<function_calls%s*>.-</function_calls%s*>", "")
+  text = text:gsub("<｜｜DSML｜｜tool_calls%s*>.-</｜｜DSML｜｜tool_calls%s*>", "")
+  text = text:gsub("<||DSML||tool_calls%s*>.-</||DSML||tool_calls%s*>", "")
+  text = text:gsub("<function%s*=%s*['\"]?[%w_%.%-]+['\"]?%s*>.-</function%s*>", "")
+  text = text:gsub("<invoke%s+name%s*=%s*['\"]?[%w_%.%-]+['\"]?%s*>.-</invoke%s*>", "")
+  return text
 end
 
 ---Handle configured timeout.
@@ -1167,6 +1230,29 @@ function AnthropicBackend:send(agent, conversation, callback)
         return
       end
       local resolved_name = agent.resolve_tool_name and agent:resolve_tool_name(call.name) or call.name
+      if call.invalid_arguments then
+        call.name = resolved_name
+        local provider_message = agent:tool_call_provider_message(calls, index)
+        conversation:add("tool_call", agent:tool_call_display(call), {
+          meta = {
+            call = call,
+            provider_message = provider_message
+          }
+        })
+        local result = string.format(
+          "malformed tool call arguments for `%s`: provider streamed invalid JSON, so the tool was not executed. This often means the response was truncated by max_tokens while generating a large tool call. Retry with smaller arguments; for existing files prefer `edit` with exact oldText/newText replacements instead of rewriting the whole file with `write`.",
+          tostring(resolved_name or call.name or "tool")
+        )
+        if call.invalid_arguments_error and call.invalid_arguments_error ~= "" then
+          result = result .. "\n\nJSON error: " .. tostring(call.invalid_arguments_error)
+        end
+        add_tool_activity(agent, conversation, call, "failed", result)
+        add_tool_result(agent, conversation, call, result, "error")
+        notify_activity_update()
+        index = index + 1
+        ask_next()
+        return
+      end
       if not tool_allowed_for_mode(agent, conversation, resolved_name) then
         call.name = resolved_name
         if is_plan_mode(agent, conversation) then
@@ -1467,6 +1553,7 @@ function AnthropicBackend:send(agent, conversation, callback)
     local function emit_partial(force)
       if partial_text == "" then return end
       if not partial_text:find("%S") then return end
+      if looks_like_text_tool_call(partial_text) then return end
       if not force and not should_show_tool_preamble(partial_text) then return end
       if has_streamed_tool_calls and force then return end
       if #partial_text < 3 and not partial_text:find("%s") then return end
@@ -1634,11 +1721,16 @@ function AnthropicBackend:send(agent, conversation, callback)
                 local arguments = {}
                 local ok_decode, decoded = pcall(json.decode, block.arguments_text or "{}")
                 if ok_decode and type(decoded) == "table" then arguments = decoded end
+                local invalid_arguments = block.arguments_text
+                  and block.arguments_text ~= ""
+                  and not (ok_decode and type(decoded) == "table")
                 table.insert(tool_calls, {
                   id = block.id or ("call_anthropic_" .. tostring(index)),
                   name = block.name,
                   arguments = arguments,
                   arguments_text = block.arguments_text or "{}",
+                  invalid_arguments = invalid_arguments,
+                  invalid_arguments_error = invalid_arguments and tostring(decoded) or nil,
                   format = "anthropic",
                   raw = {
                     type = "tool_use",
@@ -1648,6 +1740,9 @@ function AnthropicBackend:send(agent, conversation, callback)
                   }
                 })
               end
+            end
+            if #tool_calls == 0 and agent.parse_text_tool_calls then
+              tool_calls = agent:parse_text_tool_calls(final_text)
             end
           end
           local final_is_completed_plan = is_plan_mode(agent, conversation)
@@ -1666,12 +1761,18 @@ function AnthropicBackend:send(agent, conversation, callback)
             chunks = {}
             partial_text = ""
             request_tool_approval(tool_calls, round or 0, true)
+          elseif tool_calls and #tool_calls > 0 then
+            compact_after_done()
+            chunks = {}
+            partial_text = ""
+            request_tool_approval(tool_calls, round or 0, true)
           else
             emit_partial(true)
             conversation:set_status("idle", { autosave = false })
             if is_plan_mode(agent, conversation) then
               final_text = sanitize_plan_response(final_text)
             end
+            final_text = strip_text_tool_call_blocks(final_text)
             callback(true, nil, final_text, { done = true, info = info, usage = usage })
             compact_after_done()
           end
@@ -1685,40 +1786,6 @@ function AnthropicBackend:send(agent, conversation, callback)
         end
       end
     })
-  end
-
-  ---Handle sanitize plan response.
-  local function sanitize_plan_response(text)
-    text = tostring(text or "")
-    if text == "" then return text end
-    local open_tag = stream_state.OPEN_PROPOSED_PLAN_TAG
-    local close_tag = stream_state.CLOSE_PROPOSED_PLAN_TAG
-    local open_at = text:find(open_tag, 1, true)
-    local close_at = text:find(close_tag, open_at and (open_at + #open_tag) or 1, true)
-    if open_at and close_at then
-      text = text:sub(open_at + #open_tag, close_at - 1)
-    end
-    local patterns = {
-      "\n+%s*%**Ready to implement%?%**%s*.*$",
-      "\n+%s*Shall I proceed[^?\n]*%?%s*$",
-      "\n+%s*Should I proceed[^?\n]*%?%s*$",
-      "\n+%s*Would you like me to proceed[^?\n]*%?%s*$",
-      "\n+%s*Do you want me to proceed[^?\n]*%?%s*$"
-    }
-    for _, pattern in ipairs(patterns) do
-      text = text:gsub(pattern, "")
-    end
-    return text:match("^%s*(.-)%s*$") or text
-  end
-
-  ---Handle conversation has completed plan.
-  local function conversation_has_completed_plan(conversation)
-    for _, message in ipairs(conversation and conversation.messages or {}) do
-      if message.role == "assistant" and contains_completed_plan(message.message) then
-        return true
-      end
-    end
-    return false
   end
 
   post_once = function(round, without_tools)
@@ -1761,6 +1828,7 @@ function AnthropicBackend:send(agent, conversation, callback)
             compact_after_done()
             request_tool_approval(tool_calls, round, false)
           else
+            response_text = strip_text_tool_call_blocks(response_text)
             finish(response_text, info, parsed_usage)
           end
         else
@@ -1822,6 +1890,8 @@ function AnthropicBackend:resolve_tool_call(agent, conversation, request, decisi
   end
 
   conversation:set_status("calling tool", { autosave = false })
+  agent:set_loading(true)
+  local cancel_epoch = self.cancel_epoch
   core.add_background_thread(function()
     local previous_confirm = assistant_tools.set_confirm_write(function()
       return true
@@ -1844,7 +1914,7 @@ function AnthropicBackend:resolve_tool_call(agent, conversation, request, decisi
     if not ok then
       result = "tool error: " .. tostring(result or "unknown error")
     end
-    if self:is_cancelled() then
+    if self:is_cancelled(cancel_epoch) then
       if callback then callback(false, "request cancelled") end
       return
     end
@@ -1861,6 +1931,7 @@ function AnthropicBackend:resolve_tool_call(agent, conversation, request, decisi
     end
     add_tool_result(agent, conversation, call, result, ok and "ok" or "error")
     conversation:set_status("working", { autosave = false })
+    agent:set_loading(true)
     if callback then callback(true) end
     resume_in_background(pending)
   end)

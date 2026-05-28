@@ -16,17 +16,21 @@ local Backend = Object:extend()
 function Backend:new(name)
   self.name = name or "backend"
   self.cancelled = false
+  self.cancel_epoch = 0
   self.active = false
 end
 
 ---Request cancellation of the current provider operation.
 function Backend:cancel()
   self.cancelled = true
+  self.cancel_epoch = (tonumber(self.cancel_epoch) or 0) + 1
 end
 
 ---Return whether cancelled.
+---@param epoch integer|nil
 ---@return boolean
-function Backend:is_cancelled()
+function Backend:is_cancelled(epoch)
+  if epoch and epoch ~= self.cancel_epoch then return true end
   return self.cancelled
 end
 

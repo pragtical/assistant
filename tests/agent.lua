@@ -1765,6 +1765,28 @@ test.describe("assistant agent", function()
     test.equal(payload.output_config, nil)
   end)
 
+  test.it("parses deepseek anthropic DSML text tool calls", function()
+    local agent = DeepSeekAnthropic()
+    local calls = agent:parse_tool_calls({
+      content = {
+        {
+          type = "text",
+          text = "<｜｜DSML｜｜tool_calls>\n"
+            .. "<｜｜DSML｜｜invoke name=\"write\">\n"
+            .. "<parameter=path>\n/tmp/demo.txt\n</parameter>\n"
+            .. "<parameter=content>\nhello\n</parameter>\n"
+            .. "</｜｜DSML｜｜invoke>\n"
+            .. "</｜｜DSML｜｜tool_calls>"
+        }
+      }
+    })
+
+    test.equal(#calls, 1)
+    test.equal(calls[1].name, "write")
+    test.equal(calls[1].arguments.path, "/tmp/demo.txt")
+    test.equal(calls[1].arguments.content, "hello")
+  end)
+
   test.it("strips replayed deepseek anthropic thinking unless explicitly configured", function()
     local agent = DeepSeekAnthropic()
     local conversation = Conversation(agent, "/tmp")
@@ -2228,6 +2250,27 @@ test.describe("assistant agent", function()
     config.plugins.assistant.send_max_tokens = old_send
     config.plugins.assistant.send_max_tokens_amount = old_amount
     test.equal(near_limit_payload.max_tokens, 128)
+  end)
+
+  test.it("scales Anthropic max_tokens from large context", function()
+    local old_send = config.plugins.assistant.send_max_tokens
+    local old_amount = config.plugins.assistant.send_max_tokens_amount
+    config.plugins.assistant.send_max_tokens = false
+    config.plugins.assistant.send_max_tokens_amount = nil
+
+    local agent = DeepSeekAnthropic()
+    local conversation = Conversation(agent, "project")
+    conversation:add("user", "hello", { autosave = false })
+    conversation:set_usage({
+      total_tokens = 87157,
+      context = 1048576
+    })
+
+    local payload = agent:build_payload(conversation)
+
+    config.plugins.assistant.send_max_tokens = old_send
+    config.plugins.assistant.send_max_tokens_amount = old_amount
+    test.equal(payload.max_tokens, 393216)
   end)
 
   test.it("caps configured max_tokens to provider output limits", function()

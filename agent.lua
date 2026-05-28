@@ -1031,6 +1031,12 @@ function Agent:configured_reasoning_effort()
   return value
 end
 
+---Return the reasoning effort that should be shown in the UI.
+---@return string|nil
+function Agent:display_reasoning_effort()
+  return self:configured_reasoning_effort()
+end
+
 ---Return whether provider reasoning_content should be persisted and replayed.
 ---@return boolean
 function Agent:should_persist_reasoning_content()
@@ -1043,6 +1049,30 @@ end
 ---@return string field
 function Agent:generation_budget_field()
   return "max_tokens"
+end
+
+---Return the generation budget derived from remaining context.
+---@param conversation assistant.Conversation|nil
+---@return integer|nil
+function Agent:context_generation_budget(conversation)
+  local usage = conversation and conversation.usage or nil
+  local context = tonumber(usage and (usage.context or usage.model_context_window))
+    or tonumber(conversation and conversation.options and conversation.options.context)
+    or tonumber(self.model_metadata and self.model_metadata.context_window)
+  local used = tonumber(usage and usage.total_tokens)
+  if not (context and used and context > used) then return nil end
+
+  local remaining = context - used
+  local reserve = math.max(256, math.floor(context * 0.1))
+  local budget = math.max(128, remaining - reserve)
+  local fraction = tonumber(self.options.output_context_fraction)
+    or tonumber(self.model_metadata and self.model_metadata.output_context_fraction)
+  if not (fraction and fraction > 0 and fraction <= 1) then fraction = 0.5 end
+  budget = math.min(budget, math.floor(context * fraction))
+
+  local cap = tonumber(self.model_metadata and self.model_metadata.max_output_tokens)
+  if cap and cap > 0 then budget = math.min(budget, cap) end
+  return math.max(1, math.floor(budget))
 end
 
 ---Handle generation budget.
@@ -1062,20 +1092,8 @@ function Agent:generation_budget(conversation)
     if cap and cap > 0 then explicit = math.min(explicit, cap) end
     return math.floor(explicit)
   end
-  local usage = conversation and conversation.usage or nil
-  local context = tonumber(usage and (usage.context or usage.model_context_window))
-    or tonumber(conversation and conversation.options and conversation.options.context)
-    or tonumber(self.model_metadata and self.model_metadata.context_window)
-  local used = tonumber(usage and usage.total_tokens)
-  if context and used and context > used then
-    local remaining = context - used
-    local reserve = math.max(256, math.floor(context * 0.1))
-    local budget = math.max(128, remaining - reserve)
-    local default = tonumber(self.model_metadata and self.model_metadata.default_max_tokens)
-    if default and default > 0 then budget = math.min(budget, default) end
-    if cap and cap > 0 then budget = math.min(budget, cap) end
-    return math.max(1, math.floor(budget))
-  end
+  local context_budget = self:context_generation_budget(conversation)
+  if context_budget then return context_budget end
   local default = tonumber(self.model_metadata and self.model_metadata.default_max_tokens)
   if default and default > 0 then
     if cap and cap > 0 then default = math.min(default, cap) end
@@ -1281,9 +1299,21 @@ local function parse_text_tool_calls(content)
   local parsed = {}
   if type(content) ~= "string" or content == "" then return parsed end
   content = decode_xml_entities(content)
+  content = content
+    :gsub("<｜｜DSML｜｜tool_calls%s*>", "<tool_call>")
+    :gsub("</｜｜DSML｜｜tool_calls%s*>", "</tool_call>")
+    :gsub("<||DSML||tool_calls%s*>", "<tool_call>")
+    :gsub("</||DSML||tool_calls%s*>", "</tool_call>")
+    :gsub("<｜｜DSML｜｜invoke%s+", "<invoke ")
+    :gsub("</｜｜DSML｜｜invoke%s*>", "</invoke>")
+    :gsub("<||DSML||invoke%s+", "<invoke ")
+    :gsub("</||DSML||invoke%s*>", "</invoke>")
   for body in content:gmatch("<tool_call%s*>(.-)</tool_call%s*>") do
     for name, function_body in body:gmatch("<function%s*=%s*['\"]?([%w_%.%-]+)['\"]?%s*>(.-)</function%s*>") do
       insert_text_tool_call(parsed, name, function_body)
+    end
+    for name, invoke_body in body:gmatch("<invoke%s+name%s*=%s*['\"]?([%w_%.%-]+)['\"]?%s*>(.-)</invoke%s*>") do
+      insert_text_tool_call(parsed, name, invoke_body)
     end
   end
   content = content:gsub("<tool_call%s*>.-</tool_call%s*>", "")
@@ -1296,6 +1326,13 @@ local function parse_text_tool_calls(content)
   return parsed
 end
 
+---Parse text-encoded tool calls.
+---@param content string|nil
+---@return table[] calls
+function Agent:parse_text_tool_calls(content)
+  return parse_text_tool_calls(content)
+end
+
 ---Parse tool calls.
 ---@param result table|nil
 ---@return table[] calls
@@ -1305,7 +1342,7 @@ function Agent:parse_tool_calls(result)
   local message = choice and choice.message
   local calls = message and message.tool_calls
   if type(calls) ~= "table" then
-    return parse_text_tool_calls(message and message.content)
+    return self:parse_text_tool_calls(message and message.content)
   end
   local parsed = {}
   for _, call in ipairs(calls) do
@@ -1324,7 +1361,7 @@ function Agent:parse_tool_calls(result)
     end
   end
   if #parsed == 0 then
-    return parse_text_tool_calls(message and message.content)
+    return self:parse_text_tool_calls(message and message.content)
   end
   return parsed
 end

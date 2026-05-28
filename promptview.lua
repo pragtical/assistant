@@ -280,7 +280,7 @@ end
 ---@return string label
 local function model_reasoning_label(agent)
   local model = tostring(agent and agent.model or "")
-  local effort = agent and agent.configured_reasoning_effort and agent:configured_reasoning_effort()
+  local effort = agent and agent.display_reasoning_effort and agent:display_reasoning_effort()
   if model ~= "" and effort and effort ~= "none" then
     return string.format("%s (%s)", model, effort)
   end
@@ -997,6 +997,9 @@ function PromptView:has_active_prompt_turn()
     or self.pending_user_input_request ~= nil
     or self.pending_approval_request ~= nil
     or self.pending_tool_call_request ~= nil
+    or (self.conversation
+      and self.conversation.has_unresolved_tool_calls
+      and self.conversation:has_unresolved_tool_calls())
 end
 
 ---Handle queue prompt.
@@ -1624,6 +1627,9 @@ function PromptView:cancel()
   self.pending_user_input_request = nil
   self.pending_approval_request = nil
   self.pending_tool_call_request = nil
+  if self.conversation and self.conversation.drop_unresolved_tool_calls then
+    self.conversation:drop_unresolved_tool_calls({ autosave = false })
+  end
   self.pending_streaming_transcript_text = nil
   self.streaming_transcript_follow_bottom = nil
   self.streaming_assistant_heading_committed = nil

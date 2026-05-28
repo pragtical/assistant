@@ -695,6 +695,84 @@ function Conversation:remove(entry)
   return false
 end
 
+---Return the provider tool call id from a transcript message.
+---@param msg table|nil
+---@return string|nil
+local function tool_call_id(msg)
+  local meta = msg and msg.meta or nil
+  local call = meta and meta.call or nil
+  local id = call and call.id
+  if id and id ~= "" then return tostring(id) end
+  local provider = meta and meta.provider_message or nil
+  for _, block in ipairs(type(provider) == "table" and type(provider.content) == "table" and provider.content or {}) do
+    if type(block) == "table" and block.id and block.id ~= "" then
+      return tostring(block.id)
+    end
+    if type(block) == "table" and block.tool_use_id and block.tool_use_id ~= "" then
+      return tostring(block.tool_use_id)
+    end
+  end
+end
+
+---Return unresolved tool call ids.
+---@return table<string, boolean> ids
+function Conversation:unresolved_tool_call_ids()
+  local calls = {}
+  local results = {}
+  for _, msg in ipairs(self.messages or {}) do
+    local id = tool_call_id(msg)
+    if id and msg.role == "tool_call" then
+      calls[id] = true
+    elseif id and msg.role == "tool_result" then
+      results[id] = true
+    end
+  end
+  for id in pairs(results) do
+    calls[id] = nil
+  end
+  return calls
+end
+
+---Return whether transcript has unresolved tool calls.
+---@return boolean
+function Conversation:has_unresolved_tool_calls()
+  return next(self:unresolved_tool_call_ids()) ~= nil
+end
+
+---Drop unresolved tool calls and their pending activity messages.
+---@param options table|nil
+---@return integer removed
+function Conversation:drop_unresolved_tool_calls(options)
+  local unresolved = self:unresolved_tool_call_ids()
+  if not next(unresolved) then return 0 end
+  local removed = 0
+  for index = #self.messages, 1, -1 do
+    local msg = self.messages[index]
+    local id = tool_call_id(msg)
+    local drop = id and unresolved[id] and msg.role == "tool_call"
+    if not drop and msg.role == "activity" then
+      local key = msg.meta and msg.meta.http_activity_key
+      for call_id in pairs(unresolved) do
+        if type(key) == "string" and key:find(call_id, 1, true) then
+          drop = true
+          break
+        end
+      end
+    end
+    if drop then
+      table.remove(self.messages, index)
+      removed = removed + 1
+    end
+  end
+  if removed > 0 then
+    self:touch()
+    if not (options and options.autosave == false) then
+      self:save()
+    end
+  end
+  return removed
+end
+
 ---Remove all transcript messages and persist the empty session.
 function Conversation:clear()
   self.messages = {}

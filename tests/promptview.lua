@@ -506,6 +506,25 @@ test.describe("assistant prompt view", function()
     test.equal(view.status.label:find("model-a", 1, true) ~= nil, true)
   end)
 
+  test.it("hides inherited reasoning for DeepSeek Anthropic", function()
+    local old_reasoning_effort = config.plugins.assistant.reasoning_effort
+    config.plugins.assistant.reasoning_effort = "low"
+    local DeepSeekAnthropic = require "plugins.assistant.agent.deepseek_anthropic"
+    local agent = DeepSeekAnthropic({ model = "deepseek-v4-pro" })
+    agent.reasoning_effort = "low"
+    agent.reasoning_effort_inherited = true
+    local view = PromptView({
+      agent = agent,
+      conversation = Conversation(agent, "/tmp")
+    })
+
+    view:refresh()
+
+    config.plugins.assistant.reasoning_effort = old_reasoning_effort
+    test.equal(view.status.label:find("deepseek%-v4%-pro %(low%)"), nil)
+    test.equal(view.status.label:find("deepseek-v4-pro", 1, true) ~= nil, true)
+  end)
+
   test.it("clears loading state after model list callback", function()
     local agent = Ollama()
     local view = PromptView({
@@ -1680,6 +1699,53 @@ test.describe("assistant prompt view", function()
 
     test.equal(#view.prompt_queue, 0)
     test.equal(view.active_prompt_turn, false)
+  end)
+
+  test.it("drops unresolved tool calls on cancellation", function()
+    local agent = Ollama()
+    local conversation = Conversation(agent, "/tmp")
+    conversation:add("user", "run check", { autosave = false })
+    conversation:add("tool_call", "Tool: exec_command", {
+      autosave = false,
+      meta = {
+        call = {
+          id = "call_cancelled",
+          name = "exec_command",
+          arguments = { cmd = "sleep 10" }
+        },
+        provider_message = {
+          role = "assistant",
+          content = {
+            {
+              type = "tool_use",
+              id = "call_cancelled",
+              name = "exec_command",
+              input = { cmd = "sleep 10" }
+            }
+          }
+        }
+      }
+    })
+    conversation:add("activity", "Running command\n\nTool: `exec_command`\nStatus: requested", {
+      autosave = false,
+      meta = {
+        http_activity_key = "tool:exec_command:requested:call_cancelled"
+      }
+    })
+    local view = PromptView({
+      agent = agent,
+      conversation = conversation,
+      backend = {
+        cancel = function() end,
+        finish_request = function() end
+      }
+    })
+
+    test.equal(view:has_active_prompt_turn(), true)
+    view:cancel()
+
+    test.equal(conversation:has_unresolved_tool_calls(), false)
+    test.equal(conversation.messages[#conversation.messages].role, "user")
   end)
 
   test.it("sends a new prompt immediately after cancellation while backend unwinds", function()

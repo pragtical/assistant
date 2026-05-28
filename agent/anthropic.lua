@@ -236,7 +236,9 @@ end
 ---@param conversation assistant.Conversation
 ---@return table payload
 function Anthropic:build_payload(conversation)
-  local max_tokens = self:generation_budget(conversation) or 8192
+  local max_tokens = self:generation_budget(conversation)
+    or self:context_generation_budget(conversation)
+    or 8192
   local provider_messages = self:provider_messages_for_conversation(conversation)
   local anthropic_messages, system_prompt = convert_to_anthropic_format(provider_messages)
   local payload = {
@@ -347,6 +349,7 @@ function Anthropic:parse_tool_calls(result)
   if type(content) ~= "table" then return {} end
   local response_content = self:response_content_blocks(result)
   local calls = {}
+  local text_blocks = {}
   for _, block in ipairs(content) do
     if type(block) == "table" and block.type == "tool_use" and block.name then
       local args = block.input or {}
@@ -360,7 +363,12 @@ function Anthropic:parse_tool_calls(result)
         raw = block,
         anthropic_content = response_content
       })
+    elseif type(block) == "table" and block.type == "text" then
+      table.insert(text_blocks, tostring(block.text or ""))
     end
+  end
+  if #calls == 0 and #text_blocks > 0 then
+    return Anthropic.super.parse_text_tool_calls(self, table.concat(text_blocks))
   end
   return calls
 end

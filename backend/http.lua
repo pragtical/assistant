@@ -2105,6 +2105,8 @@ function HttpBackend:resolve_tool_call(agent, conversation, request, decision, c
   end
 
   conversation:set_status("calling tool", { autosave = false })
+  agent:set_loading(true)
+  local cancel_epoch = self.cancel_epoch
   core.add_background_thread(function()
     local previous_confirm = assistant_tools.set_confirm_write(function()
       return true
@@ -2127,7 +2129,7 @@ function HttpBackend:resolve_tool_call(agent, conversation, request, decision, c
     if not ok then
       result = "tool error: " .. tostring(result or "unknown error")
     end
-    if self:is_cancelled() then
+    if self:is_cancelled(cancel_epoch) then
       if callback then callback(false, "request cancelled") end
       return
     end
@@ -2144,6 +2146,7 @@ function HttpBackend:resolve_tool_call(agent, conversation, request, decision, c
     end
     add_tool_result(agent, conversation, call, result, ok and "ok" or "error")
     conversation:set_status("working", { autosave = false })
+    agent:set_loading(true)
     if callback then callback(true) end
     resume_in_background(pending)
   end)

@@ -46,6 +46,13 @@ function DeepSeekAnthropic:has_explicit_reasoning_effort()
     and self.reasoning_effort:match("^%s*(.-)%s*$") ~= ""
 end
 
+---Return the reasoning effort that should be shown in the UI.
+---@return string|nil
+function DeepSeekAnthropic:display_reasoning_effort()
+  if not self:has_explicit_reasoning_effort() then return nil end
+  return self:configured_reasoning_effort()
+end
+
 ---Return whether a payload replays provider thinking blocks.
 ---@param payload table
 ---@return boolean
