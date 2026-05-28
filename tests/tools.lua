@@ -269,7 +269,7 @@ test.describe("assistant tools", function()
     }), true)
   end)
 
-  test.it("refreshes active conversation context after memory mutations", function()
+  test.it("refreshes active conversation memory metadata after memory mutations", function()
     local agent = tools.register_agent_tools(Ollama())
     local conversation = Conversation(agent, root)
 
@@ -280,7 +280,7 @@ test.describe("assistant tools", function()
     test.ok(ok, result)
     test.equal(#conversation.memories, 1)
     test.equal(conversation.memories[1].title, "Workflow")
-    test.equal(conversation.messages[1].message:find("Workflow: Keep memory context fresh.", 1, true) ~= nil, true)
+    test.equal(conversation.messages[1].message:find("Workflow: Keep memory context fresh.", 1, true), nil)
   end)
 
   test.it("yields while searching many memories", function()
@@ -454,6 +454,17 @@ test.describe("assistant tools", function()
   test.it("searches project files", function()
     local results = tools.search(root, "beta")
     test.equal(results:find("sample.txt", 1, true) ~= nil, true)
+  end)
+
+  test.it("skips binary files while searching project files", function()
+    write(root .. PATHSEP .. "binary.bin", "alpha" .. string.char(0) .. string.char(0xff) .. "beta")
+
+    local results = tools.search(root, "beta")
+
+    test.equal(results:find("sample.txt", 1, true) ~= nil, true)
+    test.equal(results:find("binary.bin", 1, true), nil)
+    test.equal(results:find(string.char(0), 1, true), nil)
+    test.equal(results:find(string.char(0xff), 1, true), nil)
   end)
 
   test.it("lists project files", function()

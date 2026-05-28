@@ -104,6 +104,7 @@ function DeepSeek:new(options)
     stream_responses = true,
     tool_calling = true,
     local_compact = true,
+    vision = false,
     keep_reasoning_content = false
   }, options.capabilities)
   self.super.new(self, options)

@@ -38,7 +38,8 @@ function Anthropic:new(options)
     collaboration_modes = true,
     stream_responses = true,
     tool_calling = true,
-    local_compact = true
+    local_compact = true,
+    vision = true
   }, options.capabilities)
   self.super.new(self, options)
 end
@@ -119,10 +120,47 @@ end
 ---@param messages table[] Chat-format messages from parent provider_messages_for_conversation.
 ---@return table[] anthropic_messages
 ---@return string|nil system_prompt
-local function convert_to_anthropic_format(messages)
+local function convert_to_anthropic_format(agent, messages)
   local system_parts = {}
   local anthropic_messages = {}
   local pending_tool_calls = {}  -- tool_call_id -> {name, id, arguments}
+
+  local function image_source_from_data_url(url)
+    if type(url) ~= "string" then return nil end
+    local media_type, data = url:match("^data:([^;,]+);base64,(.+)$")
+    if not media_type or not data then return nil end
+    return {
+      type = "base64",
+      media_type = media_type,
+      data = data
+    }
+  end
+
+  local function normalize_content_blocks(blocks)
+    if type(blocks) ~= "table" then return blocks end
+    local normalized = {}
+    for _, block in ipairs(blocks) do
+      if type(block) == "table" and block.type == "image_url" then
+        local image_url = block.image_url
+        local url = type(image_url) == "table" and image_url.url or image_url
+        local source = image_source_from_data_url(url)
+        if source and agent:has_capability("vision") then
+          table.insert(normalized, {
+            type = "image",
+            source = source
+          })
+        end
+      elseif type(block) == "table"
+        and block.type == "image"
+        and not agent:has_capability("vision")
+      then
+        -- Drop restored image blocks for providers that do not accept images.
+      else
+        table.insert(normalized, block)
+      end
+    end
+    return normalized
+  end
 
   local function is_tool_result_blocks(blocks)
     if type(blocks) ~= "table" or #blocks == 0 then return false end
@@ -149,7 +187,7 @@ local function convert_to_anthropic_format(messages)
       -- If content is already a table (e.g., from tool_result provider_messages),
       -- use it directly
       if type(content) == "table" then
-        blocks = content
+        blocks = normalize_content_blocks(content)
       else
         table.insert(blocks, { type = "text", text = tostring(content) })
       end
@@ -169,7 +207,7 @@ local function convert_to_anthropic_format(messages)
       local blocks = {}
       -- Add text content if present
       if type(content) == "table" then
-        blocks = content
+        blocks = normalize_content_blocks(content)
       elseif content and content ~= "" then
         table.insert(blocks, { type = "text", text = tostring(content) })
       end
@@ -240,7 +278,7 @@ function Anthropic:build_payload(conversation)
     or self:context_generation_budget(conversation)
     or 8192
   local provider_messages = self:provider_messages_for_conversation(conversation)
-  local anthropic_messages, system_prompt = convert_to_anthropic_format(provider_messages)
+  local anthropic_messages, system_prompt = convert_to_anthropic_format(self, provider_messages)
   local payload = {
     model = self.model,
     max_tokens = max_tokens,
@@ -331,7 +369,7 @@ function Anthropic:parse_response(result)
     local parts = {}
     for _, block in ipairs(content) do
       if type(block) == "table" and block.type == "text" then
-        table.insert(parts, block.text or "")
+        table.insert(parts, type(block.text) == "string" and block.text or "")
       end
     end
     if #parts > 0 then return table.concat(parts) end
@@ -461,7 +499,8 @@ end
 ---@return table[] messages
 function Anthropic:tool_result_provider_messages(call, result, options)
   local messages = { self:tool_result_provider_message(call, result, options) }
-  local include_images = not (options and options.include_images == false)
+  local include_images = self:has_capability("vision")
+    and not (options and options.include_images == false)
   local image_message = include_images and self:tool_result_image_context_message(call, result) or nil
   if image_message then
     -- Merge image context into the tool_result user message
@@ -476,6 +515,45 @@ function Anthropic:tool_result_provider_messages(call, result, options)
     end
   end
   return messages
+end
+
+---Build a provider-only image context message using Anthropic content blocks.
+---@param call table
+---@param result any
+---@return table|nil message
+function Anthropic:tool_result_image_context_message(call, result)
+  if type(result) ~= "table" or type(result.attachments) ~= "table" then return nil end
+  local attachment
+  for _, item in ipairs(result.attachments) do
+    if type(item) == "table" and item.type == "image" and item.data and item.mime_type then
+      attachment = item
+      break
+    end
+  end
+  if not attachment then return nil end
+
+  local text = string.format(
+    "Image context from `%s` read result: %s [%s] %sx%s.",
+    call and call.name or "tool",
+    attachment.path or "",
+    attachment.mime_type or "image",
+    tostring(attachment.width or ""),
+    tostring(attachment.height or "")
+  )
+  return {
+    role = "user",
+    content = {
+      { type = "text", text = text },
+      {
+        type = "image",
+        source = {
+          type = "base64",
+          media_type = attachment.mime_type,
+          data = attachment.data
+        }
+      }
+    }
+  }
 end
 
 ---Handle supports stream tool calls.

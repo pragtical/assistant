@@ -34,7 +34,8 @@ function Ollama:new(options)
     stream_responses = true,
     tool_calling = true,
     keep_alive = true,
-    local_compact = true
+    local_compact = true,
+    vision = true
   }, options.capabilities)
   self.super.new(self, options)
   self.keep_alive = options.keep_alive

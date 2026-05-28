@@ -45,6 +45,20 @@ local REASONING_EFFORT_VALUES = {
   high = true
 }
 
+local function sanitize_provider_payload(value, seen)
+  if type(value) == "string" then
+    return tool_context.sanitize_text(value)
+  end
+  if type(value) ~= "table" then return value end
+  seen = seen or {}
+  if seen[value] then return value end
+  seen[value] = true
+  for key, item in pairs(value) do
+    value[key] = sanitize_provider_payload(item, seen)
+  end
+  return value
+end
+
 ---Create a new instance.
 ---@param options table|nil Agent configuration and provider defaults.
 function Agent:new(options)
@@ -80,6 +94,7 @@ function Agent:new(options)
     tool_calling = false,
     keep_alive = false,
     local_compact = false,
+    vision = false,
     keep_reasoning_content = false
   }, options.capabilities or {})
   self.collaboration_modes = options.collaboration_modes
@@ -637,6 +652,7 @@ function Agent:provider_messages_for_conversation(conversation)
       end
     end
   end
+  sanitize_provider_payload(messages)
   local instructions = self:get_mode_instructions(conversation)
   if not instructions or instructions == "" then return messages end
   local result = {}
@@ -654,6 +670,7 @@ function Agent:provider_messages_for_conversation(conversation)
   if not inserted then
     table.insert(result, 1, { role = "system", content = instructions })
   end
+  sanitize_provider_payload(result)
   return result
 end
 
@@ -661,10 +678,13 @@ end
 ---@param result any
 ---@return string
 function Agent:tool_result_text(result)
+  local text
   if type(result) == "table" then
-    return tostring(result.text or result.message or "")
+    text = tostring(result.text or result.message or "")
+  else
+    text = tostring(result or "")
   end
-  return tostring(result or "")
+  return tool_context.sanitize_text(text)
 end
 
 ---Handle tool names for mode.
@@ -909,9 +929,8 @@ end
 ---Build context fragments.
 ---@param project_dir string|nil
 ---@param project_instructions string|nil
----@param memories table[]|nil
 ---@return table[] fragments
-function Agent:build_context_fragments(project_dir, project_instructions, memories)
+function Agent:build_context_fragments(project_dir, project_instructions)
   project_dir = project_dir or (core.root_project() and core.root_project().path) or "."
   local fragments = {
     {
@@ -943,26 +962,15 @@ function Agent:build_context_fragments(project_dir, project_instructions, memori
       content = "Project AGENTS.md instructions:\n" .. project_instructions
     })
   end
-  if memories and #memories > 0 then
-    local memory_text = {}
-    for _, item in ipairs(memories) do
-      table.insert(memory_text, "- " .. tostring(item.title or item.id or "Memory") .. ": " .. tostring(item.content or ""))
-    end
-    table.insert(fragments, {
-      id = "memories",
-      content = "Project assistant memories:\n" .. table.concat(memory_text, "\n")
-    })
-  end
   return fragments
 end
 
 ---Handle context snapshot.
 ---@param project_dir string
 ---@param project_instructions string|nil
----@param memories table[]|nil
 ---@return table snapshot
-function Agent:context_snapshot(project_dir, project_instructions, memories)
-  local fragments = self:build_context_fragments(project_dir, project_instructions, memories)
+function Agent:context_snapshot(project_dir, project_instructions)
+  local fragments = self:build_context_fragments(project_dir, project_instructions)
   local snapshot = {
     agent = self.name,
     model = self.model,
@@ -983,11 +991,10 @@ end
 ---Return the role message.
 ---@param project_dir string
 ---@param project_instructions string|nil
----@param memories table[]|nil
 ---@return string
-function Agent:get_role_message(project_dir, project_instructions, memories)
+function Agent:get_role_message(project_dir, project_instructions)
   local parts = {}
-  for _, fragment in ipairs(self:build_context_fragments(project_dir, project_instructions, memories)) do
+  for _, fragment in ipairs(self:build_context_fragments(project_dir, project_instructions)) do
     table.insert(parts, fragment.content)
   end
   return table.concat(parts, "\n\n")
@@ -1543,6 +1550,7 @@ function Agent:tool_result_provider_message(call, result, options)
   local name = call and call.name or "unknown"
   local compact = not (options and options.compact == false)
   local content = compact and self:compact_tool_result(call, result) or self:tool_result_text(result)
+  content = tool_context.sanitize_text(content)
   return {
     role = "tool",
     tool_call_id = call.id,
@@ -1562,7 +1570,8 @@ end
 ---@return table[] messages
 function Agent:tool_result_provider_messages(call, result, options)
   local messages = { self:tool_result_provider_message(call, result, options) }
-  local include_images = not (options and options.include_images == false)
+  local include_images = self:has_capability("vision")
+    and not (options and options.include_images == false)
   local image_message = include_images and self:tool_result_image_context_message(call, result) or nil
   if image_message then table.insert(messages, image_message) end
   return messages
@@ -1669,13 +1678,20 @@ function Agent:parse_response(result)
   if type(result) ~= "table" then return tostring(result or "") end
   local choice = result.choices and result.choices[1]
   if choice and choice.message then
-    return choice.message.content or ""
+    if type(choice.message.content) == "string" then
+      return choice.message.content
+    end
+    return ""
   end
   if result.message then
-    return result.message.content or result.message
+    if type(result.message) == "string" then return result.message end
+    if type(result.message.content) == "string" then
+      return result.message.content
+    end
+    return ""
   end
-  if result.response then return result.response end
-  if result.content then return result.content end
+  if type(result.response) == "string" then return result.response end
+  if type(result.content) == "string" then return result.content end
   return ""
 end
 

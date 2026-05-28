@@ -101,6 +101,59 @@ test.describe("assistant agent", function()
     test.equal(message.content:find("compacted", 1, true), nil)
   end)
 
+  test.it("sanitizes tool results before sending them to providers", function()
+    local agent = Agent()
+    local message = agent:tool_result_provider_message({
+      id = "call_1",
+      name = "read"
+    }, "ok" .. string.char(0) .. string.char(0xff) .. "done")
+
+    test.equal(message.content:find(string.char(0), 1, true), nil)
+    test.equal(message.content:find(string.char(0xff), 1, true), nil)
+    test.equal(message.content:find("\\x00", 1, true) ~= nil, true)
+    test.equal(message.content:find("<invalid-utf8>", 1, true) ~= nil, true)
+  end)
+
+  test.it("sanitizes restored provider tool result messages", function()
+    local agent = Agent()
+    local conversation = Conversation(agent, snapshot_root)
+    local call = {
+      id = "call_1",
+      name = "read",
+      arguments = {}
+    }
+    conversation:add("tool_call", "Tool: read", {
+      meta = {
+        provider_message = agent:tool_call_provider_message({ call })
+      },
+      autosave = false
+    })
+    conversation:add("tool_result", "display text", {
+      meta = {
+        provider_message = {
+          role = "tool",
+          tool_call_id = "call_1",
+          content = "ok" .. string.char(0) .. string.char(0xff) .. "done"
+        }
+      },
+      autosave = false
+    })
+
+    local messages = agent:provider_messages_for_conversation(conversation)
+    local content
+    for _, message in ipairs(messages) do
+      if message.role == "tool" then
+        content = message.content
+      end
+    end
+
+    test.not_nil(content)
+    test.equal(content:find(string.char(0), 1, true), nil)
+    test.equal(content:find(string.char(0xff), 1, true), nil)
+    test.equal(content:find("\\x00", 1, true) ~= nil, true)
+    test.equal(content:find("<invalid-utf8>", 1, true) ~= nil, true)
+  end)
+
   test.it("can opt back into compacted tool results", function()
     local old_compact = config.plugins.assistant.compact_tool_results
     config.plugins.assistant.compact_tool_results = true
@@ -169,6 +222,137 @@ test.describe("assistant agent", function()
     test.equal(image_context.content[1].type, "text")
     test.equal(image_context.content[2].type, "image_url")
     test.equal(image_context.content[2].image_url.url, "data:image/png;base64,aW1hZ2U=")
+  end)
+
+  test.it("adds image read attachments as Anthropic image blocks", function()
+    local agent = Anthropic()
+    local call = {
+      id = "call_image",
+      name = "read",
+      arguments = { path = "image.png" }
+    }
+    local result = {
+      text = "Read image file image.png [image/png] original 2x2, sent 2x2.",
+      attachments = {
+        {
+          type = "image",
+          mime_type = "image/png",
+          data = "aW1hZ2U=",
+          path = "image.png",
+          width = 2,
+          height = 2,
+          original_width = 2,
+          original_height = 2
+        }
+      }
+    }
+
+    local messages = agent:tool_result_provider_messages(call, result)
+    local content = messages[1].content
+
+    test.equal(content[1].type, "tool_result")
+    test.equal(content[2].type, "text")
+    test.equal(content[3].type, "image")
+    test.equal(content[3].source.type, "base64")
+    test.equal(content[3].source.media_type, "image/png")
+    test.equal(content[3].source.data, "aW1hZ2U=")
+  end)
+
+  test.it("omits image read attachments for agents without vision capability", function()
+    local agent = DeepSeek()
+    local call = {
+      id = "call_image",
+      name = "read",
+      arguments = { path = "image.png" }
+    }
+    local result = {
+      text = "Read image file image.png [image/png] original 2x2, sent 2x2.",
+      attachments = {
+        {
+          type = "image",
+          mime_type = "image/png",
+          data = "aW1hZ2U=",
+          path = "image.png",
+          width = 2,
+          height = 2
+        }
+      }
+    }
+
+    local messages = agent:tool_result_provider_messages(call, result)
+
+    test.equal(agent:has_capability("vision"), false)
+    test.equal(#messages, 1)
+    test.equal(messages[1].role, "tool")
+  end)
+
+  test.it("normalizes restored image_url blocks for Anthropic payloads", function()
+    local agent = Anthropic()
+    local conversation = Conversation(agent, snapshot_root)
+    conversation:add("user", "look", { autosave = false })
+    conversation:add("tool_result", "Tool: read\nStatus: ok", {
+      meta = {
+        provider_messages = {
+          {
+            role = "user",
+            content = {
+              { type = "text", text = "Image context" },
+              {
+                type = "image_url",
+                image_url = { url = "data:image/png;base64,aW1hZ2U=" }
+              }
+            }
+          }
+        }
+      },
+      autosave = false
+    })
+
+    local payload = agent:build_payload(conversation)
+    local block = payload.messages[#payload.messages].content[2]
+
+    test.equal(block.type, "image")
+    test.equal(block.source.type, "base64")
+    test.equal(block.source.media_type, "image/png")
+    test.equal(block.source.data, "aW1hZ2U=")
+  end)
+
+  test.it("drops restored image blocks for DeepSeek Anthropic", function()
+    local agent = DeepSeekAnthropic()
+    local conversation = Conversation(agent, snapshot_root)
+    conversation:add("user", "look", { autosave = false })
+    conversation:add("tool_result", "Tool: read\nStatus: ok", {
+      meta = {
+        provider_messages = {
+          {
+            role = "user",
+            content = {
+              { type = "text", text = "Image context" },
+              {
+                type = "image_url",
+                image_url = { url = "data:image/png;base64,aW1hZ2U=" }
+              },
+              {
+                type = "image",
+                source = {
+                  type = "base64",
+                  media_type = "image/png",
+                  data = "aW1hZ2U="
+                }
+              }
+            }
+          }
+        }
+      },
+      autosave = false
+    })
+
+    local payload = agent:build_payload(conversation)
+    local content = payload.messages[#payload.messages].content
+
+    test.equal(agent:has_capability("vision"), false)
+    test.equal(#content, 1)
+    test.equal(content[1].type, "text")
   end)
 
   test.it("advertises image support on the read tool", function()
@@ -1717,6 +1901,7 @@ test.describe("assistant agent", function()
     test.equal(agent.api_key_env, "DEEPSEEK_API_KEY")
     test.equal(agent.api_format, "anthropic-messages")
     test.equal(agent.stream_format, "anthropic-sse")
+    test.equal(agent.default_reasoning_effort, "low")
     test.equal(agent.model_metadata.context_window, 1048576)
     test.equal(agent.model_metadata.max_output_tokens, 393216)
     test.equal(agent.capabilities.reports_usage, true)
@@ -1727,7 +1912,7 @@ test.describe("assistant agent", function()
     test.equal(headers["anthropic-version"], "2023-06-01")
   end)
 
-  test.it("disables deepseek anthropic thinking unless explicitly configured", function()
+  test.it("uses default deepseek anthropic reasoning unless explicitly configured", function()
     local old_reasoning_effort = config.plugins.assistant.reasoning_effort
     config.plugins.assistant.reasoning_effort = "high"
 
@@ -1739,6 +1924,15 @@ test.describe("assistant agent", function()
     config.plugins.assistant.reasoning_effort = old_reasoning_effort
 
     test.equal(payload.model, "deepseek-v4-pro")
+    test.equal(payload.thinking.type, "enabled")
+    test.equal(payload.thinking.budget_tokens, nil)
+    test.equal(payload.output_config.effort, "low")
+  end)
+
+  test.it("disables deepseek anthropic thinking for title generation", function()
+    local agent = DeepSeekAnthropic()
+    local payload = agent:build_title_payload("hello")
+
     test.equal(payload.thinking.type, "disabled")
     test.equal(payload.output_config, nil)
   end)
@@ -1751,7 +1945,7 @@ test.describe("assistant agent", function()
 
     test.equal(payload.model, "deepseek-v4-pro")
     test.equal(payload.thinking.type, "enabled")
-    test.equal(payload.thinking.budget_tokens, 1024)
+    test.equal(payload.thinking.budget_tokens, nil)
     test.equal(payload.output_config.effort, "high")
   end)
 
@@ -1787,44 +1981,8 @@ test.describe("assistant agent", function()
     test.equal(calls[1].arguments.content, "hello")
   end)
 
-  test.it("strips replayed deepseek anthropic thinking unless explicitly configured", function()
+  test.it("keeps replayed deepseek anthropic thinking by default", function()
     local agent = DeepSeekAnthropic()
-    local conversation = Conversation(agent, "/tmp")
-    conversation:add("tool_call", "tool", {
-      meta = {
-        provider_message = {
-          role = "assistant",
-          content = {
-            { type = "thinking", thinking = "private", signature = "sig" },
-            { type = "tool_use", id = "call_1", name = "list", input = {} }
-          }
-        }
-      },
-      autosave = false
-    })
-    conversation:add("tool_result", "result", {
-      meta = {
-        provider_messages = {
-          {
-            role = "user",
-            content = {
-              { type = "tool_result", tool_use_id = "call_1", content = "ok" }
-            }
-          }
-        }
-      },
-      autosave = false
-    })
-
-    local payload = agent:build_payload(conversation)
-
-    test.equal(payload.thinking.type, "disabled")
-    test.equal(payload.output_config, nil)
-    test.equal(payload.messages[2].content[1].type, "tool_use")
-  end)
-
-  test.it("keeps replayed deepseek anthropic thinking when explicitly configured", function()
-    local agent = DeepSeekAnthropic({ reasoning_effort = "low" })
     local conversation = Conversation(agent, "/tmp")
     conversation:add("tool_call", "tool", {
       meta = {
@@ -1857,6 +2015,42 @@ test.describe("assistant agent", function()
     test.equal(payload.thinking.type, "enabled")
     test.equal(payload.output_config.effort, "low")
     test.equal(payload.messages[2].content[1].type, "thinking")
+  end)
+
+  test.it("strips replayed deepseek anthropic thinking when reasoning is disabled", function()
+    local agent = DeepSeekAnthropic({ reasoning_effort = "none" })
+    local conversation = Conversation(agent, "/tmp")
+    conversation:add("tool_call", "tool", {
+      meta = {
+        provider_message = {
+          role = "assistant",
+          content = {
+            { type = "thinking", thinking = "private", signature = "sig" },
+            { type = "tool_use", id = "call_1", name = "list", input = {} }
+          }
+        }
+      },
+      autosave = false
+    })
+    conversation:add("tool_result", "result", {
+      meta = {
+        provider_messages = {
+          {
+            role = "user",
+            content = {
+              { type = "tool_result", tool_use_id = "call_1", content = "ok" }
+            }
+          }
+        }
+      },
+      autosave = false
+    })
+
+    local payload = agent:build_payload(conversation)
+
+    test.equal(payload.thinking.type, "disabled")
+    test.equal(payload.output_config, nil)
+    test.equal(payload.messages[2].content[1].type, "tool_use")
   end)
 
   test.it("parses anthropic usage objects from stream events", function()
@@ -2016,11 +2210,14 @@ test.describe("assistant agent", function()
       table.insert(ids, fragment.id)
     end
 
-    test.same(ids, { "base", "permissions", "project_instructions", "memories" })
+    test.same(ids, { "base", "permissions", "project_instructions" })
     test.equal(fragments[2].content:find("Tool safety:", 1, true) ~= nil, true)
     test.equal(agent:get_role_message("project", "Follow AGENTS.", {
       { title = "Preference", content = "Use tests." }
     }):find("Follow AGENTS.", 1, true) ~= nil, true)
+    test.equal(agent:get_role_message("project", "Follow AGENTS.", {
+      { title = "Preference", content = "Use tests." }
+    }):find("Use tests.", 1, true), nil)
   end)
 
   test.it("returns callback payloads from successful boolean tool results", function()

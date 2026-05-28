@@ -5,6 +5,13 @@ local Anthropic = require "plugins.assistant.agent.anthropic"
 ---@class assistant.agent.DeepSeekAnthropic : assistant.agent.Anthropic
 local DeepSeekAnthropic = Anthropic:extend()
 
+local DEFAULT_REASONING_EFFORT = "low"
+local DEEPSEEK_ANTHROPIC_REASONING_EFFORT_VALUES = {
+  low = true,
+  medium = true,
+  high = true
+}
+
 ---Create a new instance.
 ---@param options table|nil
 function DeepSeekAnthropic:new(options)
@@ -19,6 +26,7 @@ function DeepSeekAnthropic:new(options)
   options.stream_format = options.stream_format or "anthropic-sse"
   options.model = options.model or "deepseek-v4-pro"
   options.api_key_env = options.api_key_env or "DEEPSEEK_API_KEY"
+  options.default_reasoning_effort = options.default_reasoning_effort or DEFAULT_REASONING_EFFORT
   options.model_metadata = common.merge({
     preferred_timeout_ms = 300000,
     context_window = 1048576,
@@ -33,9 +41,11 @@ function DeepSeekAnthropic:new(options)
     collaboration_modes = true,
     stream_responses = true,
     tool_calling = true,
-    local_compact = true
+    local_compact = true,
+    vision = false
   }, options.capabilities)
   Anthropic.super.new(self, options)
+  self.default_reasoning_effort = options.default_reasoning_effort
 end
 
 ---Return whether this agent has an explicit reasoning effort setting.
@@ -46,11 +56,21 @@ function DeepSeekAnthropic:has_explicit_reasoning_effort()
     and self.reasoning_effort:match("^%s*(.-)%s*$") ~= ""
 end
 
+---Return the configured DeepSeek Anthropic reasoning effort.
+---@return string|nil effort
+function DeepSeekAnthropic:configured_deepseek_reasoning_effort()
+  if self:has_explicit_reasoning_effort() then
+    local effort = self.reasoning_effort:match("^%s*(.-)%s*$")
+    if effort == "none" then return nil end
+    if DEEPSEEK_ANTHROPIC_REASONING_EFFORT_VALUES[effort] then return effort end
+  end
+  return self.default_reasoning_effort or DEFAULT_REASONING_EFFORT
+end
+
 ---Return the reasoning effort that should be shown in the UI.
 ---@return string|nil
 function DeepSeekAnthropic:display_reasoning_effort()
-  if not self:has_explicit_reasoning_effort() then return nil end
-  return self:configured_reasoning_effort()
+  return self:configured_deepseek_reasoning_effort()
 end
 
 ---Return whether a payload replays provider thinking blocks.
@@ -90,20 +110,26 @@ end
 ---@return table payload
 function DeepSeekAnthropic:build_payload(conversation)
   local payload = DeepSeekAnthropic.super.build_payload(self, conversation)
-  local reasoning_effort = self:has_explicit_reasoning_effort()
-    and self:configured_reasoning_effort()
+  local reasoning_effort = self:configured_deepseek_reasoning_effort()
   if reasoning_effort and reasoning_effort ~= "none" then
     payload.output_config = { effort = reasoning_effort }
-    payload.thinking = {
-      type = "enabled",
-      budget_tokens = 1024
-    }
+    payload.thinking = { type = "enabled" }
   else
     if payload_replays_thinking(payload) then
       strip_replayed_thinking(payload)
     end
     payload.thinking = { type = "disabled" }
   end
+  return payload
+end
+
+---Build title payload.
+---@param prompt string
+---@return table payload
+function DeepSeekAnthropic:build_title_payload(prompt)
+  local payload = DeepSeekAnthropic.super.build_title_payload(self, prompt)
+  payload.thinking = { type = "disabled" }
+  payload.output_config = nil
   return payload
 end
 

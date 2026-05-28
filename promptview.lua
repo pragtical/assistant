@@ -77,7 +77,8 @@ end
 
 ---Return the text.
 local function get_text(doc)
-  return doc:get_text(1, 1, math.huge, math.huge):gsub("%s+$", "")
+  local text = doc:get_text(1, 1, math.huge, math.huge):gsub("%s+$", "")
+  return text
 end
 
 ---Set the doc text.
@@ -151,6 +152,99 @@ local function scroll_view_to_bottom(view)
   local max_scroll = math.max(0, view:get_scrollable_size() - view.size.y)
   view.scroll.to.y = max_scroll
   view.scroll.y = max_scroll
+  return max_scroll
+end
+
+local function current_scroll_y(view)
+  return math.max(view.scroll.y or 0, view.scroll.to.y or 0)
+end
+
+local function has_transient_stale_layout(view)
+  return view
+    and (
+      view.partial_commit_stale_frame == core.frame_start
+      or view.append_stale_frame == core.frame_start
+    )
+end
+
+---Return whether streamed output should keep following the bottom.
+function PromptView:should_follow_streaming_transcript()
+  local at_bottom = view_is_at_bottom(self.transcript)
+  if self.streaming_transcript_follow_bottom == nil then
+    self.streaming_transcript_follow_bottom = at_bottom
+  elseif self.streaming_transcript_follow_bottom
+    and self.streaming_transcript_last_scroll_y
+    and current_scroll_y(self.transcript) < self.streaming_transcript_last_scroll_y - 2
+  then
+    self.streaming_transcript_follow_bottom = false
+  elseif not self.streaming_transcript_follow_bottom and at_bottom then
+    self.streaming_transcript_follow_bottom = true
+  end
+  return self.streaming_transcript_follow_bottom
+end
+
+---Scroll the streamed transcript to bottom and remember the automatic position.
+function PromptView:scroll_streaming_transcript_to_bottom()
+  local transcript = self.transcript
+  if has_transient_stale_layout(transcript) then
+    local generation = self.submit_generation
+    core.add_thread(function()
+      coroutine.yield(0)
+      if self.transcript == transcript and self.submit_generation == generation then
+        self:scroll_streaming_transcript_to_bottom()
+      end
+    end)
+    return
+  end
+  self.streaming_transcript_last_scroll_y = scroll_view_to_bottom(self.transcript)
+end
+
+---Scroll the transcript after any pending parse/layout work settles.
+function PromptView:scroll_streaming_transcript_to_bottom_when_ready()
+  local transcript = self.transcript
+  if not transcript then return end
+
+  local generation = self.submit_generation
+  local function still_current()
+    return self.transcript == transcript and self.submit_generation == generation
+  end
+
+  local function scroll_when_ready()
+    if not still_current() then return end
+    if transcript.parsing and transcript.when_ready then
+      transcript:when_ready(scroll_when_ready)
+      return
+    end
+    if transcript.layouting and transcript.when_ready then
+      transcript:when_ready(scroll_when_ready)
+      return
+    end
+    if transcript.ensure_layout then
+      transcript:ensure_layout()
+    end
+    if has_transient_stale_layout(transcript) then
+      core.add_thread(function()
+        coroutine.yield(0)
+        scroll_when_ready()
+      end)
+      return
+    end
+    if transcript.layouting and transcript.when_ready then
+      transcript:when_ready(scroll_when_ready)
+      return
+    end
+    if still_current() then
+      self:scroll_streaming_transcript_to_bottom()
+    end
+  end
+
+  if transcript.when_ready then
+    scroll_when_ready()
+  else
+    if self.transcript == transcript and self.submit_generation == generation then
+      self:scroll_streaming_transcript_to_bottom()
+    end
+  end
 end
 
 ---Handle widget width.
@@ -341,7 +435,8 @@ function PromptView:new(options)
 
   self.transcript = MarkdownView({
     text = self.transcript_markdown_text,
-    title = self:get_name()
+    title = self:get_name(),
+    virtualized = true
   })
   self.raw_transcript_doc = Doc("Assistant Conversation.md", nil, true)
   set_doc_text(self.raw_transcript_doc, self.transcript_markdown_text)
@@ -717,16 +812,13 @@ function PromptView:flush_streaming_transcript()
     return
   end
 
-  if self.streaming_transcript_follow_bottom == nil then
-    self.streaming_transcript_follow_bottom = view_is_at_bottom(self.transcript)
-  end
-
+  local follow_bottom = self:should_follow_streaming_transcript()
   self:ensure_streaming_assistant_heading()
   self.transcript:set_partial_text(self.pending_streaming_transcript_text)
   self.pending_streaming_transcript_text = nil
   self.last_streaming_transcript_refresh = system.get_time()
-  if self.streaming_transcript_follow_bottom then
-    scroll_view_to_bottom(self.transcript)
+  if follow_bottom then
+    self:scroll_streaming_transcript_to_bottom()
   end
 end
 
@@ -751,9 +843,7 @@ function PromptView:update_streaming_activity_transcript()
   local reasoning = reasoning_activity_text(message)
   if not reasoning then return false end
 
-  if self.streaming_transcript_follow_bottom == nil then
-    self.streaming_transcript_follow_bottom = view_is_at_bottom(self.transcript)
-  end
+  local follow_bottom = self:should_follow_streaming_transcript()
   if self.streaming_activity_partial_message ~= message then
     local previous = self.transcript_markdown_text or ""
     local heading = (previous ~= "" and "\n\n" or "") .. "## Reasoning\n\n"
@@ -768,8 +858,8 @@ function PromptView:update_streaming_activity_transcript()
   end
 
   self.transcript:set_partial_text(reasoning)
-  if self.streaming_transcript_follow_bottom then
-    scroll_view_to_bottom(self.transcript)
+  if follow_bottom then
+    self:scroll_streaming_transcript_to_bottom()
   end
   return true
 end
@@ -787,9 +877,6 @@ function PromptView:commit_streaming_activity_transcript()
   local final_markdown = previous .. appended
   local follow_bottom = self.transcript and view_is_at_bottom(self.transcript)
 
-  if self.transcript and self.transcript.clear_partial_text then
-    self.transcript:clear_partial_text()
-  end
   if self.transcript and self.transcript.set_text then
     self.transcript:set_text(final_markdown)
   end
@@ -800,7 +887,8 @@ function PromptView:commit_streaming_activity_transcript()
   self.streaming_activity_base_markdown = nil
   self.streaming_activity_heading_committed = nil
   self.streaming_transcript_follow_bottom = nil
-  if follow_bottom then scroll_view_to_bottom(self.transcript) end
+  self.streaming_transcript_last_scroll_y = nil
+  if follow_bottom then self:scroll_streaming_transcript_to_bottom_when_ready() end
 end
 
 ---Commit a completed assistant response to the rendered transcript.
@@ -826,11 +914,8 @@ function PromptView:commit_streaming_transcript(assistant_message)
     appended_markdown = (previous ~= "" and "\n\n" or "") .. markdown
   end
   local final_markdown = previous .. appended_markdown
-  local follow_bottom = view_is_at_bottom(self.transcript)
+  local follow_bottom = self:should_follow_streaming_transcript()
   if self.streaming_assistant_heading_committed then
-    if self.transcript.clear_partial_text then
-      self.transcript:clear_partial_text()
-    end
     self.transcript:set_text(final_markdown)
   else
     self.transcript:commit_partial_text(appended_markdown)
@@ -840,6 +925,7 @@ function PromptView:commit_streaming_transcript(assistant_message)
   self.pending_transcript_snapshot = nil
   self.pending_streaming_transcript_text = nil
   self.streaming_transcript_follow_bottom = nil
+  self.streaming_transcript_last_scroll_y = nil
   self.streaming_assistant_heading_committed = nil
   self.streaming_assistant_base_markdown = nil
   self.streaming_activity_partial_message = nil
@@ -847,7 +933,7 @@ function PromptView:commit_streaming_transcript(assistant_message)
   self.streaming_activity_heading_committed = nil
   self.last_streaming_transcript_refresh = nil
   if follow_bottom then
-    scroll_view_to_bottom(self.transcript)
+    self:scroll_streaming_transcript_to_bottom_when_ready()
   end
 end
 
@@ -970,7 +1056,11 @@ function PromptView:refresh()
     self:sync_raw_transcript()
   end
   if follow_bottom then
-    scroll_view_to_bottom(transcript_view)
+    if transcript_view == self.transcript then
+      self:scroll_streaming_transcript_to_bottom_when_ready()
+    else
+      scroll_view_to_bottom(transcript_view)
+    end
   end
   self:refresh_controls()
 end
@@ -1043,6 +1133,7 @@ function PromptView:dispatch_prompt_turn(text)
   self.submit_generation = (self.submit_generation or 0) + 1
   local generation = self.submit_generation
   self.active_prompt_turn = true
+  local follow_bottom = self.transcript and view_is_at_bottom(self.transcript)
   local first_user_prompt = true
   for _, message in ipairs(self.conversation.messages or {}) do
     if message.role == "user" and not (message.meta and message.meta.provider_only) then
@@ -1052,6 +1143,10 @@ function PromptView:dispatch_prompt_turn(text)
   end
   self.conversation:add("user", text)
   self:refresh()
+  if follow_bottom then
+    self.streaming_transcript_follow_bottom = true
+    self:scroll_streaming_transcript_to_bottom_when_ready()
+  end
   local title_prompt_after_first_response = first_user_prompt and text or nil
 
   ---Handle should auto compact.
@@ -1111,6 +1206,7 @@ function PromptView:dispatch_prompt_turn(text)
     self.pending_assistant = nil
     self.pending_streaming_transcript_text = nil
     self.streaming_transcript_follow_bottom = nil
+    self.streaming_transcript_last_scroll_y = nil
     self.streaming_assistant_heading_committed = nil
     self.streaming_assistant_base_markdown = nil
     self.streaming_activity_partial_message = nil
@@ -1248,6 +1344,7 @@ function PromptView:dispatch_prompt_turn(text)
         self.pending_assistant = nil
         self.pending_streaming_transcript_text = nil
         self.streaming_transcript_follow_bottom = nil
+        self.streaming_transcript_last_scroll_y = nil
         self.streaming_assistant_heading_committed = nil
         self.streaming_assistant_base_markdown = nil
         self.streaming_activity_partial_message = nil
@@ -1268,6 +1365,7 @@ function PromptView:dispatch_prompt_turn(text)
       self.pending_assistant = nil
       self.pending_streaming_transcript_text = nil
       self.streaming_transcript_follow_bottom = nil
+      self.streaming_transcript_last_scroll_y = nil
       self.streaming_assistant_heading_committed = nil
       self.streaming_assistant_base_markdown = nil
       self.streaming_activity_partial_message = nil
@@ -1632,6 +1730,7 @@ function PromptView:cancel()
   end
   self.pending_streaming_transcript_text = nil
   self.streaming_transcript_follow_bottom = nil
+  self.streaming_transcript_last_scroll_y = nil
   self.streaming_assistant_heading_committed = nil
   self.streaming_assistant_base_markdown = nil
   self.last_streaming_transcript_refresh = nil

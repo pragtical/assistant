@@ -1019,9 +1019,11 @@ end
 local function scan_file(path, text, search_type, out)
   local data = context.read_file(path)
   if not data then return end
+  if context.looks_binary(data) then return true end
   local line_no = 1
   for line in (data .. "\n"):gmatch("(.-)\n") do
     if matches(line, text, search_type) then
+      line = context.limit_text(line, 2000)
       table.insert(out, string.format("%s:%d:%s", path, line_no, line))
       if #out >= 200 then return false end
     end

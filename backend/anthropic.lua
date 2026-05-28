@@ -237,6 +237,41 @@ local function normalized_tool_arguments_for_signature(name, arguments)
   return normalized
 end
 
+local function streamed_content_blocks(content_blocks)
+  local indexes = {}
+  for index in pairs(content_blocks or {}) do
+    table.insert(indexes, index)
+  end
+  table.sort(indexes)
+  local blocks = {}
+  for _, index in ipairs(indexes) do
+    local block = content_blocks[index]
+    if block and block.type == "thinking" then
+      table.insert(blocks, {
+        type = "thinking",
+        thinking = block.thinking or "",
+        signature = block.signature
+      })
+    elseif block and block.type == "text" then
+      table.insert(blocks, {
+        type = "text",
+        text = block.text or ""
+      })
+    elseif block and block.type == "tool_use" and block.name and block.name ~= "" then
+      local arguments = {}
+      local ok, decoded = pcall(json.decode, block.arguments_text or "{}")
+      if ok and type(decoded) == "table" then arguments = decoded end
+      table.insert(blocks, {
+        type = "tool_use",
+        id = block.id,
+        name = block.name,
+        input = arguments
+      })
+    end
+  end
+  return #blocks > 0 and blocks or nil
+end
+
 ---Handle tool call signature.
 local function tool_call_signature(agent, call)
   local name = call and call.name
@@ -1608,10 +1643,12 @@ function AnthropicBackend:send(agent, conversation, callback)
           id = block.id,
           name = block.name,
           text = "",
+          thinking = tostring(block.thinking or ""),
+          signature = block.signature,
           arguments_text = ""
         }
         if block.type == "thinking" then
-          reasoning_text = reasoning_text .. tostring(block.text or "")
+          reasoning_text = reasoning_text .. tostring(block.thinking or block.text or "")
           emit_reasoning(false)
         end
         return
@@ -1631,11 +1668,12 @@ function AnthropicBackend:send(agent, conversation, callback)
           local partial = delta.partial_json or ""
           if block then block.arguments_text = (block.arguments_text or "") .. partial end
         elseif delta.type == "thinking_delta" then
-          local text = delta.text or ""
+          local text = delta.thinking or delta.text or ""
+          if block then block.thinking = (block.thinking or "") .. text end
           reasoning_text = reasoning_text .. text
           emit_reasoning(false)
         elseif delta.type == "signature_delta" then
-          -- signature for continued thinking; ignore for display
+          if block then block.signature = delta.signature end
         end
         return
       end
@@ -1715,6 +1753,7 @@ function AnthropicBackend:send(agent, conversation, callback)
               table.insert(indexes, index)
             end
             table.sort(indexes)
+            local anthropic_content = streamed_content_blocks(content_blocks)
             for _, index in ipairs(indexes) do
               local block = content_blocks[index]
               if block and block.type == "tool_use" and block.name and block.name ~= "" then
@@ -1737,7 +1776,8 @@ function AnthropicBackend:send(agent, conversation, callback)
                     id = block.id,
                     name = block.name,
                     input = arguments
-                  }
+                  },
+                  anthropic_content = anthropic_content
                 })
               end
             end

@@ -258,14 +258,55 @@ function context.contains_omitted_tool_argument(value)
   return false
 end
 
+---Return text safe for provider JSON string payloads.
+---@param text any
+---@return string sanitized
+function context.sanitize_text(text)
+  text = tostring(text or "")
+  if string.uclean then
+    text = text:uclean("<invalid-utf8>", true)
+  end
+  local out = {}
+  local i = 1
+  while i <= #text do
+    local byte = text:byte(i)
+    if (byte < 0x20 or byte == 0x7f) and byte ~= 0x09 and byte ~= 0x0a and byte ~= 0x0d then
+      table.insert(out, string.format("\\x%02X", byte))
+    else
+      table.insert(out, text:sub(i, i))
+    end
+    i = i + 1
+    if i % 4096 == 0 then context.yield_ui() end
+  end
+  return table.concat(out)
+end
+
+---Return whether raw bytes are likely binary rather than searchable text.
+---@param text string
+---@return boolean binary
+function context.looks_binary(text)
+  text = tostring(text or "")
+  if text:find("%z") then return true end
+  local limit = math.min(#text, 8192)
+  if limit == 0 then return false end
+  local controls = 0
+  for i = 1, limit do
+    local byte = text:byte(i)
+    if byte < 0x20 and byte ~= 0x09 and byte ~= 0x0a and byte ~= 0x0c and byte ~= 0x0d then
+      controls = controls + 1
+    end
+  end
+  return controls / limit > 0.05
+end
+
 ---Handle limit text.
 function context.limit_text(text, limit)
   limit = tonumber(limit) or context.OUTPUT_LIMIT
   text = tostring(text or "")
   if #text <= limit then
-    return text, false, 0, #text
+    return context.sanitize_text(text), false, 0, #text
   end
-  return text:sub(1, limit) .. string.format("\n... truncated %d bytes ...", #text - limit),
+  return context.sanitize_text(text:sub(1, limit)) .. string.format("\n... truncated %d bytes ...", #text - limit),
     true,
     #text - limit,
     #text

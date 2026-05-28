@@ -28,7 +28,8 @@ function Lms:new(options)
     collaboration_modes = true,
     stream_responses = true,
     tool_calling = true,
-    local_compact = true
+    local_compact = true,
+    vision = true
   }, options.capabilities)
   self.super.new(self, options)
 end

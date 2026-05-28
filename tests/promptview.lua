@@ -1,5 +1,6 @@
 local test = require "core.test"
 dofile("tests/helper.inc")
+local core = require "core"
 local config = require "core.config"
 local keymap = require "core.keymap"
 local style = require "core.style"
@@ -19,6 +20,19 @@ local AnthropicBackend = require "plugins.assistant.backend.anthropic"
 local HttpBackend = require "plugins.assistant.backend.http"
 local assistant = dofile("init.lua")
 
+local function run_core_threads_until(predicate, timeout)
+  local deadline = system.get_time() + (timeout or 1)
+  while not predicate() and system.get_time() < deadline do
+    if coroutine.isyieldable() then
+      coroutine.yield(0)
+    else
+      core.step(system.get_time())
+    end
+    system.sleep(0.001)
+  end
+  test.ok(predicate(), "timed out waiting for core thread")
+end
+
 test.describe("assistant prompt view", function()
   test.it("creates embedded transcript and prompt views", function()
     local agent = Ollama()
@@ -35,6 +49,16 @@ test.describe("assistant prompt view", function()
     test.equal(view.raw_transcript_doc.filename, "Assistant Conversation.md")
     test.equal(view.prompt_doc.filename, "Assistant Prompt.md")
     test.not_nil(view:get_state())
+  end)
+
+  test.it("uses virtualized rendered transcripts", function()
+    local agent = Ollama()
+    local view = PromptView({
+      agent = agent,
+      conversation = Conversation(agent, "/tmp")
+    })
+
+    test.equal(view.transcript.virtualized, true)
   end)
 
   test.it("reports the conversation title from embedded child views", function()
@@ -506,12 +530,12 @@ test.describe("assistant prompt view", function()
     test.equal(view.status.label:find("model-a", 1, true) ~= nil, true)
   end)
 
-  test.it("hides inherited reasoning for DeepSeek Anthropic", function()
+  test.it("shows default reasoning for DeepSeek Anthropic", function()
     local old_reasoning_effort = config.plugins.assistant.reasoning_effort
-    config.plugins.assistant.reasoning_effort = "low"
+    config.plugins.assistant.reasoning_effort = "high"
     local DeepSeekAnthropic = require "plugins.assistant.agent.deepseek_anthropic"
     local agent = DeepSeekAnthropic({ model = "deepseek-v4-pro" })
-    agent.reasoning_effort = "low"
+    agent.reasoning_effort = "high"
     agent.reasoning_effort_inherited = true
     local view = PromptView({
       agent = agent,
@@ -521,7 +545,8 @@ test.describe("assistant prompt view", function()
     view:refresh()
 
     config.plugins.assistant.reasoning_effort = old_reasoning_effort
-    test.equal(view.status.label:find("deepseek%-v4%-pro %(low%)"), nil)
+    test.equal(view.status.label:find("deepseek%-v4%-pro %(low%)") ~= nil, true)
+    test.equal(view.status.label:find("deepseek%-v4%-pro %(high%)"), nil)
     test.equal(view.status.label:find("deepseek-v4-pro", 1, true) ~= nil, true)
   end)
 
@@ -613,6 +638,47 @@ test.describe("assistant prompt view", function()
 
     local next_bottom = math.max(0, view.transcript:get_scrollable_size() - view.transcript.size.y)
     test.equal(view.transcript.scroll.y, next_bottom)
+  end)
+
+  test.it("keeps rendered append at bottom after threaded relayout", function()
+    local agent = Ollama()
+    local conversation = Conversation(agent, "/tmp")
+    conversation:add("assistant", "hello", { autosave = false })
+    local view = PromptView({
+      agent = agent,
+      conversation = conversation
+    })
+    view:refresh()
+    view.transcript.size.y = 100
+    local appended = false
+    view.transcript.get_scrollable_size = function()
+      return appended and not view.transcript.layouting and 1200 or 1000
+    end
+    view.transcript.scroll.y = 900
+    view.transcript.scroll.to.y = 900
+    local ready_callback
+    view.transcript.when_ready = function(_, cb)
+      ready_callback = cb
+    end
+    view.transcript.append_text = function()
+      appended = true
+      view.transcript.layouting = true
+      return true
+    end
+
+    conversation:add("assistant", "world", { autosave = false })
+    view:refresh()
+
+    test.ok(view.transcript.scroll.y >= 900)
+    test.ok(view.transcript.scroll.to.y >= 900)
+
+    view.transcript.layouting = false
+    if ready_callback then
+      ready_callback(view.transcript)
+    end
+
+    test.equal(view.transcript.scroll.y, 1100)
+    test.equal(view.transcript.scroll.to.y, 1100)
   end)
 
   test.it("keeps raw markdown scrolled to bottom when already at bottom", function()
@@ -761,6 +827,93 @@ test.describe("assistant prompt view", function()
     test.equal(partial_text, "Let me take a look overview.")
   end)
 
+  test.it("stops following streamed assistant output after manual scroll up", function()
+    local agent = Ollama()
+    local callback
+    local view = PromptView({
+      agent = agent,
+      conversation = Conversation(agent, "/tmp"),
+      backend = {
+        send = function(_, _, _, cb)
+          callback = cb
+        end
+      }
+    })
+    view.transcript.size.y = 100
+    view.transcript.get_scrollable_size = function()
+      return 1000
+    end
+    view.transcript.scroll.y = 900
+    view.transcript.scroll.to.y = 900
+
+    view.prompt_doc:insert(1, 1, "prompt")
+    view:submit()
+
+    callback(true, nil, "first.", { partial = true })
+    test.equal(view.transcript.scroll.y, 900)
+    test.equal(view.transcript.scroll.to.y, 900)
+
+    view.transcript.scroll.y = 100
+    view.transcript.scroll.to.y = 100
+    callback(true, nil, " second.", { partial = true })
+
+    test.equal(view.transcript.scroll.y, 100)
+    test.equal(view.transcript.scroll.to.y, 100)
+
+    view.transcript.scroll.y = 900
+    view.transcript.scroll.to.y = 900
+    callback(true, nil, " third.", { partial = true })
+
+    test.equal(view.transcript.scroll.y, 900)
+    test.equal(view.transcript.scroll.to.y, 900)
+  end)
+
+  test.it("keeps following bottom when a prompt starts streaming", function()
+    local agent = Ollama()
+    local callback
+    local conversation = Conversation(agent, "/tmp")
+    conversation:add("assistant", "previous", { autosave = false })
+    local view = PromptView({
+      agent = agent,
+      conversation = conversation,
+      backend = {
+        send = function(_, _, _, cb)
+          callback = cb
+        end
+      }
+    })
+    view:refresh()
+    view.transcript.size.y = 100
+    local phase = "before"
+    view.transcript.get_scrollable_size = function()
+      if phase == "streaming" then return 1400 end
+      if phase == "submitted" then return 1200 end
+      return 1000
+    end
+    view.transcript.scroll.y = 900
+    view.transcript.scroll.to.y = 900
+    local original_append_text = view.transcript.append_text
+    view.transcript.append_text = function(this, text)
+      if tostring(text):find("## User", 1, true) then
+        phase = "submitted"
+      elseif tostring(text):find("## Assistant", 1, true) then
+        phase = "streaming"
+      end
+      return original_append_text(this, text)
+    end
+
+    view.prompt_doc:insert(1, 1, "prompt")
+    view:submit()
+    callback(true, nil, "first.", { partial = true })
+    run_core_threads_until(function()
+      return view.transcript.scroll.y == 1300
+    end)
+
+    test.equal(view.streaming_transcript_follow_bottom, true)
+    test.equal(view.transcript.scroll.y, 1300)
+    test.equal(view.transcript.scroll.to.y, 1300)
+  end)
+
   test.it("commits streamed assistant output as markdown when final", function()
     local agent = Ollama()
     local callback
@@ -806,6 +959,132 @@ test.describe("assistant prompt view", function()
     test.equal(view.pending_assistant, nil)
     test.equal(view.transcript_markdown_text:find("## Assistant", 1, true) ~= nil, true)
     test.equal(view.transcript_markdown_text:find("hello **world**", 1, true) ~= nil, true)
+  end)
+
+  test.it("keeps following bottom after streamed partial commit relayouts", function()
+    local agent = Ollama()
+    local callback
+    local view = PromptView({
+      agent = agent,
+      conversation = Conversation(agent, "/tmp"),
+      backend = {
+        send = function(_, _, _, cb)
+          callback = cb
+        end
+      }
+    })
+    view.transcript.size.y = 100
+    local committed = false
+    view.transcript.get_scrollable_size = function()
+      return committed and not view.transcript.layouting and 1200 or 1000
+    end
+    view.transcript.scroll.y = 900
+    view.transcript.scroll.to.y = 900
+    local ready_callback
+    view.transcript.when_ready = function(_, cb)
+      ready_callback = cb
+    end
+    view.transcript.set_text = function(this, markdown)
+      this.text = markdown
+      committed = true
+      this.layouting = true
+    end
+
+    view.prompt_doc:insert(1, 1, "hello")
+    view:submit()
+
+    callback(true, nil, "hel.", { partial = true })
+    test.equal(view.streaming_assistant_heading_committed, true)
+    callback(true, nil, "hello **world**", { done = true })
+
+    test.ok(view.transcript.scroll.y >= 900)
+    test.ok(view.transcript.scroll.to.y >= 900)
+
+    view.transcript.layouting = false
+    if ready_callback then
+      ready_callback(view.transcript)
+    end
+    run_core_threads_until(function()
+      return view.transcript.scroll.y == 1100
+    end)
+    test.equal(view.transcript.scroll.to.y, 1100)
+  end)
+
+  test.it("defers bottom scroll while partial commit stale layout is visible", function()
+    local old_frame_start = core.frame_start
+    core.frame_start = 3000
+    local agent = Ollama()
+    local view = PromptView({
+      agent = agent,
+      conversation = Conversation(agent, "/tmp")
+    })
+    view.transcript.size.y = 100
+    view.transcript.scroll.y = 900
+    view.transcript.scroll.to.y = 900
+    view.transcript.partial_commit_stale_frame = core.frame_start
+    view.transcript.stale_layout = {
+      width = 400,
+      height = 900,
+      content_width = 0,
+      commands = {},
+      anchors = {}
+    }
+    view.transcript.get_scrollable_size = function()
+      if view.transcript.partial_commit_stale_frame == core.frame_start then
+        return 1000
+      end
+      return 1200
+    end
+
+    view:scroll_streaming_transcript_to_bottom_when_ready()
+    test.equal(view.transcript.scroll.y, 900)
+
+    core.frame_start = 3001
+    run_core_threads_until(function()
+      return view.transcript.scroll.y == 1100
+    end)
+    core.frame_start = old_frame_start
+
+    test.equal(view.transcript.scroll.to.y, 1100)
+  end)
+
+  test.it("defers direct bottom scroll while append stale layout is visible", function()
+    local old_frame_start = core.frame_start
+    core.frame_start = 4000
+    local agent = Ollama()
+    local view = PromptView({
+      agent = agent,
+      conversation = Conversation(agent, "/tmp")
+    })
+    view.submit_generation = 1
+    view.transcript.size.y = 100
+    view.transcript.scroll.y = 900
+    view.transcript.scroll.to.y = 900
+    view.transcript.append_stale_frame = core.frame_start
+    view.transcript.stale_layout = {
+      width = 400,
+      height = 900,
+      content_width = 0,
+      commands = {},
+      anchors = {}
+    }
+    view.transcript.get_scrollable_size = function()
+      if view.transcript.append_stale_frame == core.frame_start then
+        return 1000
+      end
+      return 1200
+    end
+
+    view:scroll_streaming_transcript_to_bottom()
+    test.equal(view.transcript.scroll.y, 900)
+
+    core.frame_start = 4001
+    run_core_threads_until(function()
+      return view.transcript.scroll.y == 1100
+    end)
+    core.frame_start = old_frame_start
+
+    test.equal(view.transcript.scroll.to.y, 1100)
   end)
 
   test.it("stores provider reasoning_content metadata on final assistant output", function()
@@ -1977,6 +2256,7 @@ test.describe("assistant prompt view", function()
     local partial_text
     local appended
     local set_text_calls = 0
+    local clear_partial_calls = 0
     view.transcript.append_text = function(this, text)
       appended = text
       this.text = (this.text or "") .. text
@@ -1984,6 +2264,10 @@ test.describe("assistant prompt view", function()
     view.transcript.set_partial_text = function(this, text)
       partial_text = text
       this.partial_text = text
+    end
+    view.transcript.clear_partial_text = function(this)
+      clear_partial_calls = clear_partial_calls + 1
+      this.partial_text = nil
     end
     view.transcript.set_text = function()
       set_text_calls = set_text_calls + 1
@@ -2002,6 +2286,45 @@ test.describe("assistant prompt view", function()
     test.equal(view.transcript_markdown_text:find("## Reasoning", 1, true) ~= nil, true)
     test.equal(view.transcript_markdown_text:find("Thinking through the plan", 1, true), nil)
     test.equal(set_text_calls, 0)
+    test.equal(clear_partial_calls, 0)
+  end)
+
+  test.it("keeps streamed reasoning partial visible until commit replacement renders", function()
+    local agent = Codex()
+    local callback
+    local conversation = Conversation(agent, "/tmp")
+    local view = PromptView({
+      agent = agent,
+      conversation = conversation,
+      backend = {
+        send = function(_, _, _, cb)
+          callback = cb
+        end
+      }
+    })
+
+    local set_text_partial
+    local clear_partial_calls = 0
+    view.transcript.clear_partial_text = function(this)
+      clear_partial_calls = clear_partial_calls + 1
+      this.partial_text = nil
+    end
+    local original_set_text = view.transcript.set_text
+    view.transcript.set_text = function(this, text)
+      set_text_partial = this.partial_text
+      return original_set_text(this, text)
+    end
+
+    view.prompt_doc:insert(1, 1, "hello")
+    view:submit()
+    conversation:add("activity", "Reasoning\n\nThinking through the plan", {
+      autosave = false
+    })
+    callback(true, nil, "", { event = "activity_update", partial = true })
+    callback(true, nil, "", { event = "activity_update", done = true })
+
+    test.equal(set_text_partial, "Thinking through the plan")
+    test.equal(clear_partial_calls, 0)
   end)
 
   test.it("does not rebuild transcript for activity updates while assistant text is streaming", function()

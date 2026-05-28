@@ -516,10 +516,10 @@ function Conversation:new(agent, project_dir)
   self.project_instructions = Conversation.read_project_instructions(self.project_dir)
   self.memories = Conversation.list_memories(self.project_dir)
   self.context_snapshot = agent and agent.context_snapshot
-    and agent:context_snapshot(self.project_dir, self.project_instructions, self.memories)
+    and agent:context_snapshot(self.project_dir, self.project_instructions)
     or nil
   if agent and agent.get_role_message then
-    self:add("system", agent:get_role_message(self.project_dir, self.project_instructions, self.memories), { autosave = false })
+    self:add("system", agent:get_role_message(self.project_dir, self.project_instructions), { autosave = false })
   end
   self:refresh_environment_context(agent, { force = true, autosave = false })
 end
@@ -579,8 +579,8 @@ function Conversation:refresh_context(agent)
   if not (agent and agent.context_snapshot and agent.get_role_message) then return false end
   local project_instructions = Conversation.read_project_instructions(self.project_dir)
   local memories = Conversation.list_memories(self.project_dir)
-  local snapshot = agent:context_snapshot(self.project_dir, project_instructions, memories)
-  local role_message = agent:get_role_message(self.project_dir, project_instructions, memories)
+  local snapshot = agent:context_snapshot(self.project_dir, project_instructions)
+  local role_message = agent:get_role_message(self.project_dir, project_instructions)
   local current_system_message
   for _, message in ipairs(self.messages or {}) do
     if message.role == "system" then
@@ -592,6 +592,9 @@ function Conversation:refresh_context(agent)
     and current_system_message
     and current_system_message.message == role_message
   then
+    self.project_instructions = project_instructions
+    self.memories = memories
+    self.context_snapshot = snapshot
     return false
   end
 
