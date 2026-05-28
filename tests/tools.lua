@@ -7,6 +7,7 @@ local json = require "core.json"
 local Conversation = require "plugins.assistant.conversation"
 local Agent = require "plugins.assistant.agent"
 local tool_context = require "plugins.assistant.tool_context"
+local process_tools = require "plugins.assistant.tool.process"
 local tools = require "plugins.assistant.tools"
 local Ollama = require "plugins.assistant.agent.ollama"
 
@@ -424,6 +425,28 @@ test.describe("assistant tools", function()
 
     test.equal(ok, true)
     test.equal(read_fixture(root .. PATHSEP .. "crlf.txt"), "one\r\nTWO\r\n")
+  end)
+
+  test.it("preserves untouched unicode when fuzzy edit matching", function()
+    local left_quote = "\226\128\156"
+    local right_quote = "\226\128\157"
+    write(root .. PATHSEP .. "unicode.txt", table.concat({
+      "first = " .. left_quote .. "hello" .. right_quote,
+      "second = " .. left_quote .. "there" .. right_quote,
+      ""
+    }, "\n"))
+    tools.set_confirm_write(function() return true end)
+
+    local ok = tools.edit("unicode.txt", {
+      { oldText = 'first = "hello"', newText = 'first = "HELLO"' }
+    })
+
+    test.equal(ok, true)
+    test.equal(read_fixture(root .. PATHSEP .. "unicode.txt"), table.concat({
+      'first = "HELLO"',
+      "second = " .. left_quote .. "there" .. right_quote,
+      ""
+    }, "\n"))
   end)
 
   test.it("cooperatively yields during new read write and edit tools", function()
@@ -988,6 +1011,27 @@ Here is the patch:
       test.equal(ok, true)
     end
     test.equal(result:find("session_id: " .. tostring(session_id), 1, true) ~= nil, true)
+    tools.set_confirm_write(nil)
+  end)
+
+  test.it("closes exec command sessions owned by a conversation", function()
+    local conversation = Conversation(Ollama(), root)
+    tools.set_confirm_write(function(action)
+      return action == "exec_command"
+    end)
+    local ok, result = tool_context.with_active_conversation(conversation, function()
+      return tools.exec_command("sleep 30", root, nil, nil, nil, 1, 5000)
+    end)
+    test.equal(ok, true)
+    local session_id = tonumber(result:match("session_id:%s*(%d+)"))
+    test.not_nil(session_id)
+
+    local closed = process_tools.close_conversation_sessions(conversation)
+    ok, result = tools.exec_status(session_id, 1, 5000)
+
+    test.equal(closed, 1)
+    test.equal(ok, false)
+    test.equal(result:find("unknown exec session id", 1, true) ~= nil, true)
     tools.set_confirm_write(nil)
   end)
 

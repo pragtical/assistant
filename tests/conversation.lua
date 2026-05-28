@@ -343,7 +343,7 @@ test.describe("assistant conversation", function()
     test.equal(messages[#messages].content, "Question")
   end)
 
-  test.it("does not send assistant tool preambles back to providers", function()
+  test.it("sends assistant text before tool calls to providers", function()
     local conversation = Conversation(Ollama(), root)
     conversation:add("user", "Implement it", { autosave = false })
     conversation:add("assistant", "I need to create the missing files.", { autosave = false })
@@ -377,18 +377,39 @@ test.describe("assistant conversation", function()
     })
 
     local messages = conversation:to_provider_messages()
-    local found_preamble = false
-    local found_tool_call = false
-    for _, message in ipairs(messages) do
-      if message.role == "assistant" and message.content == "I need to create the missing files." then
-        found_preamble = true
-      end
-      if message.role == "assistant" and type(message.tool_calls) == "table" then
-        found_tool_call = true
-      end
-    end
-    test.equal(found_preamble, false)
-    test.equal(found_tool_call, true)
+    test.equal(messages[#messages - 2].role, "assistant")
+    test.equal(messages[#messages - 2].content, "I need to create the missing files.")
+    test.equal(messages[#messages - 1].role, "assistant")
+    test.equal(type(messages[#messages - 1].tool_calls), "table")
+    test.equal(messages[#messages].role, "tool")
+  end)
+
+  test.it("does not send empty assistant placeholders before tool calls", function()
+    local conversation = Conversation(Ollama(), root)
+    conversation:add("user", "Implement it", { autosave = false })
+    conversation:add("assistant", "", { autosave = false })
+    conversation:add("tool_call", "Tool: read", {
+      meta = {
+        provider_message = {
+          role = "assistant",
+          tool_calls = {
+            {
+              id = "call_read",
+              type = "function",
+              ["function"] = {
+                name = "read",
+                arguments = "{\"path\":\"main.c\"}"
+              }
+            }
+          }
+        }
+      },
+      autosave = false
+    })
+
+    local messages = conversation:to_provider_messages()
+    test.equal(messages[#messages].role, "assistant")
+    test.equal(type(messages[#messages].tool_calls), "table")
   end)
 
   test.it("does not send local error messages to providers", function()

@@ -976,10 +976,6 @@ local function calls_include_tool(agent, calls, name)
   return false
 end
 
----Handle plan mode tool block reason.
-local function plan_mode_tool_block_reason(call)
-end
-
 ---List models.
 ---@param agent assistant.Agent
 ---@param callback fun(ok: boolean, err?: string, models?: string[])
@@ -1350,22 +1346,6 @@ function AnthropicBackend:send(agent, conversation, callback)
         return
       end
       call.name = resolved_name
-      local plan_block_reason = is_plan_mode(agent, conversation) and plan_mode_tool_block_reason(call)
-      if plan_block_reason then
-        local provider_message = agent:tool_call_provider_message(calls, index)
-        conversation:add("tool_call", agent:tool_call_display(call), {
-          meta = {
-            call = call,
-            provider_message = provider_message
-          },
-          autosave = false
-        })
-        continue_after_plan_tool_block(call, plan_block_reason, function()
-          index = index + 1
-          ask_next()
-        end)
-        return
-      end
       if resolved_name == "implement_plan" then
         add_tool_activity(agent, conversation, call, "waiting for confirmation")
         notify_activity_update({ force_transcript = true })

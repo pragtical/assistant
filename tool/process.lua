@@ -46,6 +46,10 @@ end
 local process_sessions = {}
 local next_process_session_id = 1
 
+local function conversation_session_id(conversation)
+  return conversation and conversation.id or nil
+end
+
 ---Handle session for.
 ---@param session_id integer|string
 ---@return integer? session_id
@@ -53,7 +57,7 @@ local next_process_session_id = 1
 local function session_for(session_id)
   session_id = tonumber(session_id)
   local session = session_id and process_sessions[session_id]
-  if not session then return nil, "unknown exec session id: " .. tostring(session_id) end
+  if not session then return nil, nil, "unknown exec session id: " .. tostring(session_id) end
   return session_id, session
 end
 
@@ -139,7 +143,8 @@ function processtools.exec_command(cmd, workdir, shell, login, tty, yield_time_m
         started = started,
         cwd = path,
         command = cmd or "",
-        tty = tty == true
+        tty = tty == true,
+        conversation_id = conversation_session_id(context.active_conversation())
       }
       output.exit_code = ""
       output.timed_out = false
@@ -238,6 +243,25 @@ function processtools.close_exec(session_id, force, yield_time_ms, max_output_to
     return poll_session(session_id, session, yield_time_ms, max_output_tokens)
   end
   return poll_ok, result
+end
+
+---Close all process sessions associated with a conversation.
+---@param conversation assistant.Conversation|nil
+---@return integer closed_count
+function processtools.close_conversation_sessions(conversation)
+  local id = conversation_session_id(conversation)
+  if not id then return 0 end
+  local closed = 0
+  for session_id, session in pairs(process_sessions) do
+    if session.conversation_id == id then
+      if session.proc and session.proc.kill then
+        session.proc:kill()
+      end
+      process_sessions[session_id] = nil
+      closed = closed + 1
+    end
+  end
+  return closed
 end
 
 processtools.tools = {

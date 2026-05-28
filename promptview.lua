@@ -15,6 +15,7 @@ local DocView = require "core.docview"
 local MarkdownView = require "core.markdownview"
 local Conversation = require "plugins.assistant.conversation"
 local tools = require "plugins.assistant.tools"
+local process_tools = require "plugins.assistant.tool.process"
 local agent_config = require "plugins.assistant.agent_config"
 local HttpBackend = require "plugins.assistant.backend.http"
 local ModelDialog = require "plugins.assistant.ui.modeldialog"
@@ -674,6 +675,7 @@ end
 
 ---Handle try close.
 function PromptView:try_close(do_close)
+  process_tools.close_conversation_sessions(self.conversation)
   if self.backend and self.backend.close then
     self.backend:close()
   elseif self.backend and self.backend.cancel then

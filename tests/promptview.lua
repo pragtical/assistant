@@ -6,6 +6,7 @@ local keymap = require "core.keymap"
 local style = require "core.style"
 local MessageBox = require "widget.messagebox"
 local PromptView = require "plugins.assistant.promptview"
+local process_tools = require "plugins.assistant.tool.process"
 local Conversation = require "plugins.assistant.conversation"
 local Agent = require "plugins.assistant.agent"
 local Ollama = require "plugins.assistant.agent.ollama"
@@ -49,6 +50,33 @@ test.describe("assistant prompt view", function()
     test.equal(view.raw_transcript_doc.filename, "Assistant Conversation.md")
     test.equal(view.prompt_doc.filename, "Assistant Prompt.md")
     test.not_nil(view:get_state())
+  end)
+
+  test.it("closes process sessions when closing the view", function()
+    local old_close_sessions = process_tools.close_conversation_sessions
+    local closed_conversation
+    process_tools.close_conversation_sessions = function(conversation)
+      closed_conversation = conversation
+      return 1
+    end
+
+    local conversation = Conversation(Ollama(), "/tmp")
+    local backend_closed = false
+    local view = PromptView({
+      agent = Ollama(),
+      conversation = conversation,
+      backend = {
+        close = function()
+          backend_closed = true
+        end
+      }
+    })
+    view:try_close(function() end)
+
+    process_tools.close_conversation_sessions = old_close_sessions
+
+    test.equal(closed_conversation, conversation)
+    test.equal(backend_closed, true)
   end)
 
   test.it("uses virtualized rendered transcripts", function()

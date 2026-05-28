@@ -780,29 +780,70 @@ local function strip_bom(text)
   return "", text
 end
 
-local function normalize_for_fuzzy_match(text)
+local FUZZY_REPLACEMENTS = {
+  ["\226\128\152"] = "'",
+  ["\226\128\153"] = "'",
+  ["\226\128\156"] = '"',
+  ["\226\128\157"] = '"',
+  ["\226\128\147"] = "-",
+  ["\226\128\148"] = "-",
+  ["\194\160"] = " "
+}
+
+local function next_utf8_char(text, index)
+  local utf8api = _G.utf8extra
+  local pattern = utf8api and utf8api.charpattern
+  if pattern then
+    local char = text:sub(index):match("^" .. pattern)
+    if char and char ~= "" then return index + #char, char end
+  end
+  return index + 1, text:sub(index, index)
+end
+
+local function append_fuzzy_char(out, map, text, index)
+  local next_index, char = next_utf8_char(text, index)
+  table.insert(out, FUZZY_REPLACEMENTS[char] or char)
+  if map then table.insert(map, { start = index, finish = next_index - 1 }) end
+  return next_index
+end
+
+local function normalize_for_fuzzy_match(text, with_map)
   text = normalize_to_lf(text)
-  local lines = {}
-  local count = 0
-  for line in (text .. "\n"):gmatch("(.-)\n") do
-    table.insert(lines, (line:gsub("%s+$", "")))
-    count = count + 1
-    if count % 200 == 0 then context.yield_ui() end
+  local out = {}
+  local map = with_map and {} or nil
+  local line_start = 1
+  local line_count = 0
+  while line_start <= #text do
+    local newline = text:find("\n", line_start, true)
+    local line_finish = newline and (newline - 1) or #text
+    local line = text:sub(line_start, line_finish)
+    local trimmed = line:gsub("%s+$", "")
+    local limit = line_start + #trimmed - 1
+    local index = line_start
+    while index <= limit do
+      if with_map then
+        index = append_fuzzy_char(out, map, text, index)
+      else
+        index = append_fuzzy_char(out, nil, text, index)
+      end
+    end
+    if newline and newline < #text then
+      table.insert(out, "\n")
+      if with_map then table.insert(map, { start = newline, finish = newline }) end
+    end
+    line_count = line_count + 1
+    if line_count % 200 == 0 then context.yield_ui() end
+    if not newline then break end
+    line_start = newline + 1
   end
-  if text:sub(-1) ~= "\n" then
-    -- The loop above adds the final non-newline line exactly once.
-  else
-    table.remove(lines)
-  end
-  text = table.concat(lines, "\n")
-  return text
-    :gsub("\226\128\152", "'")
-    :gsub("\226\128\153", "'")
-    :gsub("\226\128\156", '"')
-    :gsub("\226\128\157", '"')
-    :gsub("\226\128\147", "-")
-    :gsub("\226\128\148", "-")
-    :gsub("\194\160", " ")
+  return table.concat(out), map
+end
+
+local function fuzzy_original_range(map, index, length)
+  local first = map and map[index]
+  local last = map and map[index + length - 1]
+  if not first or not last then return nil end
+  return first.start, last.finish - first.start + 1
 end
 
 local function count_occurrences(text, needle)
@@ -831,14 +872,16 @@ local function find_edit_match(content, old_text)
       occurrences = count_occurrences(content, old_text)
     }
   end
-  local fuzzy_content = normalize_for_fuzzy_match(content)
+  local fuzzy_content, fuzzy_map = normalize_for_fuzzy_match(content, true)
   local fuzzy_old = normalize_for_fuzzy_match(old_text)
   index = fuzzy_content:find(fuzzy_old, 1, true)
   if not index then return nil end
+  local original_index, original_length = fuzzy_original_range(fuzzy_map, index, #fuzzy_old)
+  if not original_index then return nil end
   return {
-    content = fuzzy_content,
-    index = index,
-    length = #fuzzy_old,
+    content = content,
+    index = original_index,
+    length = original_length,
     occurrences = count_occurrences(fuzzy_content, fuzzy_old)
   }
 end
@@ -1023,8 +1066,8 @@ local function scan_file(path, text, search_type, out)
   local line_no = 1
   for line in (data .. "\n"):gmatch("(.-)\n") do
     if matches(line, text, search_type) then
-      line = context.limit_text(line, 2000)
-      table.insert(out, string.format("%s:%d:%s", path, line_no, line))
+      local limited_line = context.limit_text(line, 2000)
+      table.insert(out, string.format("%s:%d:%s", path, line_no, limited_line))
       if #out >= 200 then return false end
     end
     line_no = line_no + 1

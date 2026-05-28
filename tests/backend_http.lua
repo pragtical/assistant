@@ -1891,7 +1891,7 @@ test.describe("assistant http backend", function()
     test.equal(response, "done")
   end)
 
-  test.it("recovers unterminated streamed patch arguments", function()
+  test.it("does not capture trailing fields from unterminated streamed patch arguments", function()
     local restore_background_threads = run_background_threads_immediately()
     local old_request = http.request
     local calls = 0
@@ -1914,7 +1914,7 @@ test.describe("assistant http backend", function()
                     type = "function",
                     ["function"] = {
                       name = "apply_patch",
-                      arguments = "{\"patch\":\"*** Begin Patch\\n*** Add File: Makefile\\n+all:\\n*** End Patch"
+                      arguments = "{\"patch\":\"*** Begin Patch\\n*** Add File: Makefile\\n+all:\\n*** End Patch,\"path\":\"Makefile\""
                     }
                   }
                 }
@@ -1967,8 +1967,7 @@ test.describe("assistant http backend", function()
 
     http.request = old_request
     restore_background_threads()
-    test.equal(received_patch:find("*** Begin Patch", 1, true) ~= nil, true)
-    test.equal(received_patch:find("*** End Patch", 1, true) ~= nil, true)
+    test.equal(received_patch, nil)
     test.equal(response, "done")
   end)
 

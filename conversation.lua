@@ -1017,6 +1017,16 @@ function Conversation:to_provider_messages()
       include = false
     end
     if assistant_before_tool_call[i] then
+      if content ~= "" then
+        local provider_message = { role = "assistant", content = content }
+        if msg.meta
+          and type(msg.meta.provider_reasoning_content) == "string"
+          and msg.meta.provider_reasoning_content ~= ""
+        then
+          provider_message.reasoning_content = msg.meta.provider_reasoning_content
+        end
+        table.insert(messages, provider_message)
+      end
       include = false
     end
     if include and msg.role == "tool_call" and msg.meta and msg.meta.provider_message then
