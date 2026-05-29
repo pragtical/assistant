@@ -208,6 +208,64 @@ test.describe("assistant http backend", function()
     test.equal(response, "hello")
   end)
 
+  test.it("deduplicates cumulative streamed message snapshots", function()
+    local old_request = http.request
+    http.request = function(_, _, options)
+      options.on_header({ status = 200 })
+      options.on_chunk('data: {"choices":[{"message":{"content":"I see missing pieces."}}]}\n\n')
+      options.on_chunk('data: {"choices":[{"message":{"content":"I see missing pieces. Let me fix it."}}]}\n\n')
+      options.on_chunk('data: {"choices":[{"message":{"content":"I see missing pieces. Let me fix it."},"finish_reason":"stop"}]}\n\n')
+      options.on_done(true, nil, nil, { status = 200 })
+    end
+
+    local agent = OpenAI({ stream = true })
+    local conversation = Conversation(agent, "project")
+    local backend = HttpBackend()
+    local response
+
+    backend:send(agent, conversation, function(ok, _, text, meta)
+      if ok and meta and meta.done then response = text end
+    end)
+
+    http.request = old_request
+    test.equal(response, "I see missing pieces. Let me fix it.")
+  end)
+
+  test.it("deduplicates repeated streamed text delta sequences", function()
+    local old_request = http.request
+    http.request = function(_, _, options)
+      options.on_header({ status = 200 })
+      local chunks = {
+        "220", " passed", ",", " ", "3", " failed", ".", " Let", " me", " see", " which", " tests", " failed", "\n\n",
+        "220", " passed", ",", " ", "3", " failed", ".", " Let", " me", " see", " which", " tests", " failed", "\n\n",
+        "The failure is in folding."
+      }
+      for _, text in ipairs(chunks) do
+        options.on_chunk("data: " .. json.encode({
+          choices = {
+            {
+              delta = { content = text }
+            }
+          }
+        }) .. "\n\n")
+      end
+      options.on_chunk('data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n\n')
+      options.on_done(true, nil, nil, { status = 200 })
+    end
+
+    local agent = OpenAI({ stream = true })
+    local conversation = Conversation(agent, "project")
+    local backend = HttpBackend()
+    local response
+
+    backend:send(agent, conversation, function(ok, _, text, meta)
+      if ok and meta and meta.done then response = text end
+    end)
+
+    http.request = old_request
+    test.equal(response, "220 passed, 3 failed. Let me see which tests failed\n\nThe failure is in folding.")
+  end)
+
   test.it("generates conversation titles with a focused side request", function()
     local old_post = http.post
     local title_payload
@@ -1092,6 +1150,113 @@ test.describe("assistant http backend", function()
     test.equal(markdown:find("**Running command**: `make test`", 1, true) ~= nil, true)
     test.equal(markdown:find("in `project`", 1, true) ~= nil, true)
     test.equal(markdown:find("(completed)", 1, true), nil)
+  end)
+
+  test.it("shows write previews before tool approval", function()
+    local restore_background_threads = run_background_threads_immediately()
+    local old_post = http.post
+    local executed = false
+    http.post = function(_, _, _, options)
+      options.on_done(true, nil, {
+        choices = {
+          {
+            message = {
+              content = "",
+              tool_calls = {
+                {
+                  id = "call_write",
+                  type = "function",
+                  ["function"] = {
+                    name = "write",
+                    arguments = '{"path":"preview.txt","content":"hello\\nworld\\n"}'
+                  }
+                }
+              }
+            }
+          }
+        }
+      }, { status = 200 })
+    end
+
+    local agent = tools.register_agent_tools(Ollama({ stream = false }))
+    agent.tools.write.callback = function()
+      executed = true
+      return true, "created: preview.txt"
+    end
+    local conversation = Conversation(agent, "project")
+    local backend = HttpBackend()
+    local request
+    local activity_markdown
+
+    backend:send(agent, conversation, function(ok, _, _, meta)
+      if ok and meta and meta.event == "activity_update" then
+        activity_markdown = conversation:to_markdown()
+      elseif ok and meta and meta.event == "tool_call_request" then
+        request = meta.request
+      end
+    end)
+
+    http.post = old_post
+    restore_background_threads()
+    test.equal(executed, false)
+    test.equal(request and request.call and request.call.name, "write")
+    test.equal(activity_markdown:find("**Adding**: `preview.txt`", 1, true) ~= nil, true)
+    test.equal(activity_markdown:find("```diff", 1, true) ~= nil, true)
+    test.equal(activity_markdown:find("+hello", 1, true) ~= nil, true)
+  end)
+
+  test.it("shows edit diffs before tool approval", function()
+    local restore_background_threads = run_background_threads_immediately()
+    local old_post = http.post
+    local executed = false
+    http.post = function(_, _, _, options)
+      options.on_done(true, nil, {
+        choices = {
+          {
+            message = {
+              content = "",
+              tool_calls = {
+                {
+                  id = "call_edit",
+                  type = "function",
+                  ["function"] = {
+                    name = "edit",
+                    arguments = '{"path":"main.c","edits":[{"oldText":"old line","newText":"new line"}]}'
+                  }
+                }
+              }
+            }
+          }
+        }
+      }, { status = 200 })
+    end
+
+    local agent = tools.register_agent_tools(Ollama({ stream = false }))
+    agent.tools.edit.callback = function()
+      executed = true
+      return true, "Successfully replaced 1 block(s) in main.c."
+    end
+    local conversation = Conversation(agent, "project")
+    local backend = HttpBackend()
+    local request
+    local activity_markdown
+
+    backend:send(agent, conversation, function(ok, _, _, meta)
+      if ok and meta and meta.event == "activity_update" then
+        activity_markdown = conversation:to_markdown()
+      elseif ok and meta and meta.event == "tool_call_request" then
+        request = meta.request
+      end
+    end)
+
+    http.post = old_post
+    restore_background_threads()
+    test.equal(executed, false)
+    test.equal(request and request.call and request.call.name, "edit")
+    test.equal(activity_markdown:find("**Editing**: `main.c`", 1, true) ~= nil, true)
+    test.equal(activity_markdown:find("```diff", 1, true) ~= nil, true)
+    test.equal(activity_markdown:find("-old line", 1, true) ~= nil, true)
+    test.equal(activity_markdown:find("+new line", 1, true) ~= nil, true)
   end)
 
   test.it("keeps failed tool activity visible in the rendered transcript", function()

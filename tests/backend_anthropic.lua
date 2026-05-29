@@ -31,6 +31,64 @@ test.describe("assistant Anthropic backend", function()
       .. "data: " .. json.encode(data) .. "\n\n"
   end
 
+  test.it("deduplicates repeated streamed text delta sequences", function()
+    local old_request = http.request
+    http.request = function(_, _, options)
+      options.on_header({ status = 200 })
+      options.on_chunk(event("message_start", {
+        message = {
+          usage = {
+            input_tokens = 10,
+            output_tokens = 0
+          }
+        }
+      }))
+      options.on_chunk(event("content_block_start", {
+        index = 0,
+        content_block = {
+          type = "text",
+          text = ""
+        }
+      }))
+      local chunks = {
+        "220", " passed", ",", " ", "3", " failed", ".", " Let", " me", " see", " which", " tests", " failed", "\n\n",
+        "220", " passed", ",", " ", "3", " failed", ".", " Let", " me", " see", " which", " tests", " failed", "\n\n",
+        "The failure is in folding."
+      }
+      for _, text in ipairs(chunks) do
+        options.on_chunk(event("content_block_delta", {
+          index = 0,
+          delta = {
+            type = "text_delta",
+            text = text
+          }
+        }))
+      end
+      options.on_chunk(event("content_block_stop", { index = 0 }))
+      options.on_chunk(event("message_delta", {
+        delta = { stop_reason = "end_turn" },
+        usage = {
+          input_tokens = 10,
+          output_tokens = 30
+        }
+      }))
+      options.on_chunk(event("message_stop", {}))
+      options.on_done(true, nil, nil, { status = 200 })
+    end
+
+    local agent = Anthropic({ stream = true })
+    local conversation = Conversation(agent, "project")
+    local backend = AnthropicBackend()
+    local response
+
+    backend:send(agent, conversation, function(ok, _, text, meta)
+      if ok and meta and meta.done then response = text end
+    end)
+
+    http.request = old_request
+    test.equal(response, "220 passed, 3 failed. Let me see which tests failed\n\nThe failure is in folding.")
+  end)
+
   test.it("reports malformed streamed tool arguments without executing", function()
     local old_request = http.request
     local requests = 0

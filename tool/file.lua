@@ -89,6 +89,13 @@ local function status_suffix(value)
   return Tool.status_suffix(value)
 end
 
+---Return whether an activity is still waiting to run or actively running.
+---@param value any
+---@return boolean
+local function pending_activity(value)
+  return value == nil or value == "" or value == "requested" or value == "running"
+end
+
 ---Return a compact target from common file arguments.
 ---@param call table|nil
 ---@return string
@@ -123,11 +130,12 @@ local function compact_write_activity(call, status_value, result, activity_conte
   local absolute = context.assert_project_path(args.path or value)
   if absolute then exists = system.get_file_info(absolute) ~= nil end
   local result_text = Tool.result_text(result)
-  local label = (result_text:find("^created:", 1, false) or (status_value == "requested" and not exists))
+  local pending = pending_activity(status_value)
+  local label = (result_text:find("^created:", 1, false) or (pending and not exists))
     and "Adding"
     or "Writing"
   local line = "**" .. label .. "**: " .. Tool.file_link_or_ticked(value, activity_context, "file") .. status_suffix(status_value)
-  if status_value ~= "requested" then return line end
+  if not pending then return line end
   local content = tostring(args.content or "")
   if content == "" then return line end
   local chunks = {}
@@ -187,7 +195,7 @@ local function compact_edit_activity(call, status_value, _, activity_context)
   local args = call and call.arguments or {}
   local value = target(call)
   local line = "**Editing**: " .. Tool.file_link_or_ticked(value, activity_context, "file") .. status_suffix(status_value)
-  local diff = status_value == "requested" and edit_diff(args) or nil
+  local diff = pending_activity(status_value) and edit_diff(args) or nil
   return diff and (line .. "\n\n" .. diff) or line
 end
 

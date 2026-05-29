@@ -138,6 +138,19 @@ test.describe("assistant tools", function()
     test.equal(edit_activity:find("```diff", 1, true) ~= nil, true)
     test.equal(edit_activity:find("-old line", 1, true) ~= nil, true)
     test.equal(edit_activity:find("+new line", 1, true) ~= nil, true)
+    local pending_edit_activity = edit_tool.compact_activity_markdown({
+      arguments = {
+        path = "main.c",
+        edits = {
+          { oldText = "old line", newText = "new line" }
+        }
+      }
+    }, nil, "")
+    test.equal(pending_edit_activity:find("**Editing**: `main.c`", 1, true) ~= nil, true)
+    test.equal(pending_edit_activity:find("(requested)", 1, true), nil)
+    test.equal(pending_edit_activity:find("```diff", 1, true) ~= nil, true)
+    test.equal(pending_edit_activity:find("-old line", 1, true) ~= nil, true)
+    test.equal(pending_edit_activity:find("+new line", 1, true) ~= nil, true)
     local completed_edit_activity = edit_tool.compact_activity_markdown({
       arguments = {
         path = "main.c",
@@ -166,6 +179,15 @@ test.describe("assistant tools", function()
     }, "requested", "")
     test.equal(write_activity:find("**Writing**: [sample.txt](<sample.txt>) (requested)", 1, true) ~= nil, true)
     test.equal(write_activity:find("+replacement", 1, true) ~= nil, true)
+    local pending_write_activity = write_tool.compact_activity_markdown({
+      arguments = {
+        path = "sample.txt",
+        content = "replacement\n"
+      }
+    }, nil, "")
+    test.equal(pending_write_activity:find("**Writing**: [sample.txt](<sample.txt>)", 1, true) ~= nil, true)
+    test.equal(pending_write_activity:find("(requested)", 1, true), nil)
+    test.equal(pending_write_activity:find("+replacement", 1, true) ~= nil, true)
 
     local completed_write_activity = write_tool.compact_activity_markdown({
       arguments = {

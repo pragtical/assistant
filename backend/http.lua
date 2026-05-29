@@ -769,6 +769,57 @@ local function append_stream_tool_calls(collected, deltas)
   end
 end
 
+---Return the append-only portion of a stream text event.
+---@param current string
+---@param incoming string
+---@param state table|nil
+---@return string delta
+local function stream_text_delta(current, incoming, state)
+  current = tostring(current or "")
+  incoming = tostring(incoming or "")
+  if current == "" or incoming == "" then return incoming end
+  if incoming:sub(1, #current) == current then
+    return incoming:sub(#current + 1)
+  end
+  if current:sub(-#incoming) == incoming then return "" end
+
+  state = type(state) == "table" and state or nil
+  if state and state.repeat_pos then
+    local expected = current:sub(state.repeat_pos, state.repeat_pos + #incoming - 1)
+    if expected == incoming then
+      state.repeat_pos = state.repeat_pos + #incoming
+      return ""
+    end
+    state.repeat_pos = nil
+  end
+
+  if state
+    and not incoming:match("^%s+$")
+    and (current:match("[\r\n]%s*$") or current:match("[%.%!%?]%s*$"))
+  then
+    local start = math.max(1, #current - 2048)
+    local window = current:sub(start)
+    local search_from = 1
+    local repeat_pos
+    while true do
+      local found = window:find(incoming, search_from, true)
+      if not found then break end
+      local pos = start + found - 1
+      local before = pos > 1 and current:sub(pos - 1, pos - 1) or "\n"
+      if pos + #incoming - 1 < #current and before:match("[%s%(%)%[%]%{%}\"'`.,:;!?%-]") then
+        repeat_pos = pos
+      end
+      search_from = found + 1
+    end
+    if repeat_pos then
+      state.repeat_pos = repeat_pos + #incoming
+      return ""
+    end
+  end
+
+  return incoming
+end
+
 ---Handle unescape json stringish.
 local function unescape_json_stringish(text)
   text = tostring(text or "")
@@ -1637,7 +1688,7 @@ function HttpBackend:send(agent, conversation, callback)
         }
       })
       add_tool_activity(agent, conversation, call, "requested")
-      notify_activity_update()
+      notify_activity_update({ force_transcript = true })
       if tool_call_counts[signature] > 1 then
         local cached = tool_result_cache[signature]
         if not cached and tool_call_counts[signature] > max_repeated_tool_calls() then
@@ -1775,6 +1826,7 @@ function HttpBackend:send(agent, conversation, callback)
     local raw_stream_entries = {}
     local last_raw_flush
     local partial_text = ""
+    local text_delta_state = {}
     local reasoning_text = ""
     local last_partial_at = 0
     local last_emitted_partial = nil
@@ -1882,8 +1934,11 @@ function HttpBackend:send(agent, conversation, callback)
           end
         end
         if accept_text then
-          table.insert(chunks, text)
-          partial_text = partial_text .. text
+          local delta = stream_text_delta(partial_text, text, text_delta_state)
+          if delta ~= "" then
+            table.insert(chunks, delta)
+            partial_text = partial_text .. delta
+          end
         end
         if emit_text then emit_partial(false) end
       end
