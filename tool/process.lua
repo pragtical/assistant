@@ -170,8 +170,24 @@ function processtools.write_stdin(session_id, chars, yield_time_ms, max_output_t
   local proc = session.proc
   local text = tostring(chars or "")
   if text ~= "" then
-    local ok, err = proc:write(text)
-    if not ok then return false, "could not write stdin: " .. tostring(err) end
+    local total = 0
+    local failures = 0
+    while total < #text do
+      local chunk = text:sub(total + 1)
+      local written, err = proc:write(chunk)
+      if err then return false, "could not write stdin: " .. tostring(err) end
+      written = written == true and #chunk or (tonumber(written) or 0)
+      total = total + written
+      if written <= 0 then
+        failures = failures + 1
+        if failures > 20 then
+          return false, "could not write stdin: write made no progress"
+        end
+        context.yield_ui()
+      else
+        failures = 0
+      end
+    end
   end
   return poll_session(session_id, session, yield_time_ms, max_output_tokens)
 end

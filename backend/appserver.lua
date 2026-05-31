@@ -40,13 +40,26 @@ end
 ---Write chunks.
 local function write_chunks(writer, text)
   text = tostring(text or "")
-  for index = 1, #text, WRITE_SIZE do
-    writer(text:sub(index, index + WRITE_SIZE - 1))
+  local index = 1
+  local failures = 0
+  while index <= #text do
+    local chunk = text:sub(index, math.min(#text, index + WRITE_SIZE - 1))
+    local written, errmsg = writer(chunk)
+    if errmsg then return false, errmsg end
+    written = tonumber(written) or #chunk
+    if written <= 0 then
+      failures = failures + 1
+      if failures > 20 then return false, "write made no progress" end
+    else
+      failures = 0
+      index = index + written
+    end
     if coroutine.isyieldable() then
       core.redraw = true
       coroutine.yield()
     end
   end
+  return true
 end
 
 ---Append protocol log.
@@ -76,10 +89,14 @@ local function append_protocol_log(agent, conversation, direction, message)
     direction = direction,
     message = message
   }) .. "\n"
-  write_chunks(function(chunk)
+  local ok, errmsg = write_chunks(function(chunk)
     fp:write(chunk)
+    return #chunk
   end, line)
   fp:close()
+  if not ok then
+    core.error("Assistant: could not write protocol log %s: %s", path, errmsg)
+  end
 end
 
 ---Handle raw logging enabled.
@@ -284,9 +301,12 @@ function AppServerBackend:request(method, params, agent, conversation)
   protocol_log("Assistant app-server -> %s", encoded)
   append_protocol_log(agent, conversation, "request", message)
   append_raw_message(conversation, "appserver-request", message)
-  write_chunks(function(chunk)
-    self.proc:write(chunk)
+  local ok, errmsg = write_chunks(function(chunk)
+    return self.proc:write(chunk)
   end, encoded .. "\n")
+  if not ok then
+    core.error("Assistant app-server request write failed: %s", errmsg)
+  end
   return id
 end
 
@@ -301,9 +321,12 @@ function AppServerBackend:notify(method, params, agent, conversation)
   protocol_log("Assistant app-server -> %s", encoded)
   append_protocol_log(agent, conversation, "notify", message)
   append_raw_message(conversation, "appserver-notify", message)
-  write_chunks(function(chunk)
-    self.proc:write(chunk)
+  local ok, errmsg = write_chunks(function(chunk)
+    return self.proc:write(chunk)
   end, encoded .. "\n")
+  if not ok then
+    core.error("Assistant app-server notification write failed: %s", errmsg)
+  end
 end
 
 ---Respond to an app-server request that needs client input.
@@ -326,9 +349,10 @@ function AppServerBackend:respond(id, result, error, agent, conversation)
   protocol_log("Assistant app-server -> %s", encoded)
   append_protocol_log(agent, conversation, "response", message)
   append_raw_message(conversation, "appserver-response", message)
-  write_chunks(function(chunk)
-    self.proc:write(chunk)
+  local ok, errmsg = write_chunks(function(chunk)
+    return self.proc:write(chunk)
   end, encoded .. "\n")
+  if not ok then return false, errmsg end
   return true
 end
 

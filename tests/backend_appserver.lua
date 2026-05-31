@@ -63,6 +63,28 @@ test.describe("assistant app-server backend", function()
     config.plugins.assistant = real_assistant_config
   end)
 
+  test.it("writes full app-server requests after partial process writes", function()
+    local proc = fake_proc()
+    proc.writes = {}
+    function proc:write(data)
+      local n = math.min(5, #data)
+      table.insert(self.writes, data:sub(1, n))
+      return n
+    end
+
+    local backend = AppServerBackend()
+    backend.proc = proc
+    backend.next_id = 1
+
+    local id = backend:request("test/method", { text = "abcdef" }, Codex(), nil)
+    local written = table.concat(proc.writes)
+
+    test.equal(id, 1)
+    test.equal(written:sub(-1), "\n")
+    test.equal(written:find('"method":"test/method"', 1, true) ~= nil, true)
+    test.equal(written:find('"text":"abcdef"', 1, true) ~= nil, true)
+  end)
+
   test.it("starts a thread and turn over persistent jsonl", function()
     local proc = fake_proc({
       '{"id":1,"result":{}}\n',
