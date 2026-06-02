@@ -119,6 +119,12 @@ test.describe("assistant tools", function()
       "**Inspecting project**: `" .. common.basename(root) .. "` (completed)"
     )
     test.equal(
+      agent.tools.search.compact_activity_markdown({ arguments = { directory = root, text = "needle", search_type = "regex" } }, "completed", "", {
+        project_dir = root
+      }),
+      "**Searching**: `" .. common.basename(root) .. "` for `needle` (regex) (completed)"
+    )
+    test.equal(
       exec_tool.compact_activity_markdown({ name = "exec_command", arguments = { cmd = "make test", workdir = "project" } }, "running", ""),
       "**Running command**: `make test` in `project` (running)"
     )
@@ -499,6 +505,11 @@ test.describe("assistant tools", function()
   test.it("searches project files", function()
     local results = tools.search(root, "beta")
     test.equal(results:find("sample.txt", 1, true) ~= nil, true)
+  end)
+
+  test.it("search rejects empty queries", function()
+    local results = tools.search(root, nil, "plain")
+    test.equal(results, "missing search text")
   end)
 
   test.it("skips binary files while searching project files", function()

@@ -118,6 +118,25 @@ local function compact_file_activity(label)
   end
 end
 
+---Return compact search activity with directory, query, and search mode.
+---@param call table|nil
+---@param status_value string|nil
+---@param _ any
+---@param activity_context table|nil
+---@return string
+local function compact_search_activity(call, status_value, _, activity_context)
+  local args = call and call.arguments or {}
+  local directory = tostring(args.directory or "")
+  local rendered = Tool.relative_path_or_ticked(directory, activity_context, "target")
+  local text = context.optional_text(args.text) or ""
+  local search_type = context.optional_text(args.search_type) or "plain"
+  local details = ""
+  if text ~= "" then
+    details = " for `" .. text .. "`"
+  end
+  return "**Searching**: " .. rendered .. details .. " (" .. search_type .. ")" .. status_suffix(status_value)
+end
+
 ---Return compact mutation activity.
 ---@param call table|nil
 ---@param status_value string|nil
@@ -1412,7 +1431,7 @@ end
 
 ---Search for text in files below a project directory.
 ---@param directory string
----@param text string
+---@param text string?
 ---@param search_type "plain"|"regex"|"luapattern"|string?
 ---@return string result
 function filetools.search(directory, text, search_type)
@@ -1420,6 +1439,10 @@ function filetools.search(directory, text, search_type)
   if not path then return err end
   local info = system.get_file_info(path)
   if not info or info.type ~= "dir" then return "not a directory: " .. path end
+  text = context.optional_text(text)
+  if not text or text == "" then
+    return "missing search text"
+  end
   search_type = search_type or "plain"
   local narrowed_note
   if search_type == "plain" then
@@ -1698,14 +1721,14 @@ filetools.tools = {
     result_is_successful = inspection_result_is_successful,
     compact_history = compact_inspection_history,
     activity_label = function() return "Inspecting project" end,
-    compact_activity_markdown = compact_file_activity("Inspecting project"),
+    compact_activity_markdown = compact_search_activity,
     description = "Search for text in a project directory. For exact replacement tasks, search the complete old value from the user first and do not broaden to substrings unless explicitly asked.",
     read_only = true,
     requires_approval = read_approval("directory"),
     params = {
       { name = "directory", description = "Directory to search.", type = "string" },
-      { name = "text", description = "Text or pattern to find.", type = "string" },
-      { name = "search_type", description = "Search mode.", type = "string", enum = { "plain", "regex", "luapattern" } }
+      { name = "text", description = "Search query. Interpreted as literal text, a Lua pattern, or a regular expression according to search_type.", type = "string" },
+      { name = "search_type", description = "How to interpret text: plain for literal substring search, luapattern for Lua patterns, regex for regular expressions. Default: plain.", type = "string", enum = { "plain", "regex", "luapattern" } }
     }
   }),
   Tool:new({
