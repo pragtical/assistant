@@ -43,10 +43,10 @@ function misctools.tool_catalog(category, selected_names)
       { "web_find", "web_find(url, pattern, plain?, timeout_ms?) - fetch a URL and return matching lines" }
     },
     files = {
-      { "list", "list(directory, recursive, max_results, pattern?) - list project files and directories" },
+      { "list", "list(directory, recursive?, max_results?, pattern?) - list project files and directories" },
       { "read", "read(path, offset?, limit?) - read a project file; use offset/limit for large files" },
       { "file_info", "file_info(path) - inspect file metadata and content hash" },
-      { "search", "search(directory, text, search_type) - search project files" }
+      { "search", "search(directory, text, search_type?) - search project files" }
     },
     edit = {
       { "apply_patch", "apply_patch(patch) - apply a structured patch or unified diff. Use recent exact context for existing files; after a context mismatch, read the target and rebuild the patch." },
@@ -63,7 +63,7 @@ function misctools.tool_catalog(category, selected_names)
     },
     git = {
       { "git_status", "git_status(directory) - show git status" },
-      { "git_diff", "git_diff(directory, pathspec) - show git diff" }
+      { "git_diff", "git_diff(directory, pathspec?) - show git diff" }
     },
     memory = {
       { "search_memory", "search_memory(query?) - search or list project-local assistant memories" },

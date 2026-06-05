@@ -701,8 +701,8 @@ local function display_limited(text, limit)
 end
 
 ---Handle fenced.
-local function fenced(text, language)
-  return "```" .. (language or "text") .. "\n" .. display_limited(text) .. "\n```"
+local function fenced(text, language, limit)
+  return "```" .. (language or "text") .. "\n" .. display_limited(text, limit) .. "\n```"
 end
 
 ---Handle file change activity.
@@ -771,18 +771,37 @@ local function command_activity(item)
   if item.exitCode ~= nil then
     table.insert(parts, "Exit: " .. tostring(item.exitCode))
   end
+  if type(item.aggregatedOutput) == "string" and item.aggregatedOutput ~= "" then
+    table.insert(parts, "")
+    table.insert(parts, "Output:")
+    table.insert(parts, fenced(item.aggregatedOutput, "text", 4000))
+  end
   return table.concat(parts, "\n")
 end
 
----Add activity.
-local function add_activity(conversation, text, key)
+---Add or update activity.
+local function upsert_activity(conversation, text, key)
   text = tostring(text or "")
   if text == "" then return end
+  if key then
+    for _, message in ipairs(conversation.messages or {}) do
+      if message.role == "activity"
+        and message.meta
+        and message.meta.appserver_activity_key == key
+      then
+        message.message = text
+        conversation:touch()
+        return
+      end
+    end
+  end
   local last = conversation:last()
   if last
     and last.role == "activity"
     and (last.message == text or (key and last.meta and last.meta.appserver_activity_key == key))
   then
+    last.message = text
+    conversation:touch()
     return
   end
   conversation:add("activity", text, {
@@ -792,6 +811,31 @@ local function add_activity(conversation, text, key)
       appserver_activity_key = key
     }
   })
+end
+
+---Switch the cumulative response stream when the app-server starts a new item.
+---@param state table
+---@param kind string
+---@param item_id string|nil
+local function use_response_stream(state, kind, item_id)
+  item_id = item_id and tostring(item_id) or nil
+  if state.response_stream_kind ~= kind or state.response_item_id ~= item_id then
+    state.response = ""
+    state.response_stream_kind = kind
+    state.response_item_id = item_id
+  end
+end
+
+---Return metadata for cumulative response updates.
+---@param state table
+---@return table
+local function response_stream_meta(state)
+  return {
+    partial = true,
+    stream_kind = state.response_stream_kind,
+    stream_id = state.response_item_id,
+    cumulative = true
+  }
 end
 
 ---Compact thread.
@@ -978,9 +1022,10 @@ local function apply_message(agent, conversation, msg, state, callback)
     set_conversation_status(conversation, "reasoning")
     local delta = msg.params and (msg.params.delta or msg.params.text)
     if type(delta) == "string" and delta ~= "" then
+      use_response_stream(state, "plan", msg.params and msg.params.itemId)
       state.has_assistant_response = true
       state.response = state.response .. delta
-      emit_update(callback, state, state.response, { partial = true })
+      emit_update(callback, state, state.response, response_stream_meta(state))
     end
   elseif msg.method == "turn/started" then
     set_conversation_status(conversation, "working")
@@ -995,15 +1040,16 @@ local function apply_message(agent, conversation, msg, state, callback)
     set_conversation_status(conversation, "responding")
     local delta = msg.params and (msg.params.delta or msg.params.text)
     if type(delta) == "string" and delta ~= "" then
+      use_response_stream(state, "assistant", msg.params and msg.params.itemId)
       state.has_assistant_response = true
       state.response = state.response .. delta
-      emit_update(callback, state, state.response, { partial = true })
+      emit_update(callback, state, state.response, response_stream_meta(state))
     end
   elseif msg.method == "item/started" then
     local item = msg.params and msg.params.item
     set_conversation_status(conversation, status_for_item(item))
     if type(item) == "table" and (item.type == "commandExecution" or item.type == "command") then
-      add_activity(conversation, command_activity(item), "command:" .. tostring(item.id or "") .. ":started")
+      upsert_activity(conversation, command_activity(item), "command:" .. tostring(item.id or ""))
       emit_update(callback, state, state.response, {
         partial = true,
         event = "activity_update"
@@ -1012,21 +1058,23 @@ local function apply_message(agent, conversation, msg, state, callback)
   elseif msg.method == "item/completed" then
     local item = msg.params and msg.params.item
     if type(item) == "table" and item.type == "plan" and type(item.text) == "string" then
+      use_response_stream(state, "plan", item.id)
       state.has_assistant_response = true
       state.response = item.text
-      emit_update(callback, state, state.response, { partial = true }, true)
+      emit_update(callback, state, state.response, response_stream_meta(state), true)
     elseif type(item) == "table" and item.type == "agentMessage" and type(item.text) == "string" then
+      use_response_stream(state, "assistant", item.id)
       state.has_assistant_response = true
       state.response = item.text
-      emit_update(callback, state, state.response, { partial = true }, true)
+      emit_update(callback, state, state.response, response_stream_meta(state), true)
     elseif type(item) == "table" and (item.type == "fileChange" or item.type == "patch") then
-      add_activity(conversation, file_change_activity(item, conversation), "file-change:" .. tostring(item.id or ""))
+      upsert_activity(conversation, file_change_activity(item, conversation), "file-change:" .. tostring(item.id or ""))
       emit_update(callback, state, state.response, {
         partial = true,
         event = "activity_update"
       }, true)
     elseif type(item) == "table" and (item.type == "commandExecution" or item.type == "command") then
-      add_activity(conversation, command_activity(item), "command:" .. tostring(item.id or "") .. ":completed")
+      upsert_activity(conversation, command_activity(item), "command:" .. tostring(item.id or ""))
       if conversation.status and tostring(conversation.status):find("^running command:", 1, false) then
         set_conversation_status(conversation, "working")
       end

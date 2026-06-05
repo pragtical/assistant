@@ -879,6 +879,60 @@ test.describe("assistant prompt view", function()
     test.equal(partial_text, "Let me take a look overview.")
   end)
 
+  test.it("replaces cumulative stream text when app-server stream item changes", function()
+    local agent = Codex()
+    local callback
+    local conversation = Conversation(agent, "/tmp")
+    local view = PromptView({
+      agent = agent,
+      conversation = conversation,
+      backend = {
+        send = function(_, _, _, cb)
+          callback = cb
+        end
+      }
+    })
+
+    local partial_text
+    view.transcript.set_partial_text = function(_, text)
+      partial_text = text
+    end
+
+    view.prompt_doc:insert(1, 1, "prompt")
+    view:submit()
+
+    callback(true, nil, "Checking notifications.", {
+      partial = true,
+      cumulative = true,
+      stream_kind = "assistant",
+      stream_id = "msg_1"
+    })
+    callback(true, nil, "# Plan", {
+      partial = true,
+      cumulative = true,
+      stream_kind = "plan",
+      stream_id = "plan_1"
+    })
+    callback(true, nil, "# Plan\n\n- Step", {
+      partial = true,
+      cumulative = true,
+      stream_kind = "plan",
+      stream_id = "plan_1"
+    })
+
+    local assistant_messages = {}
+    for _, message in ipairs(conversation.messages) do
+      if message.role == "assistant" then
+        table.insert(assistant_messages, message.message)
+      end
+    end
+
+    test.equal(assistant_messages[#assistant_messages - 1], "Checking notifications.")
+    test.equal(assistant_messages[#assistant_messages], "# Plan\n\n- Step")
+    test.equal(view.pending_assistant.message, "# Plan\n\n- Step")
+    test.equal(tostring(partial_text or ""):find("Checking", 1, true), nil)
+  end)
+
   test.it("stops following streamed assistant output after manual scroll up", function()
     local agent = Ollama()
     local callback

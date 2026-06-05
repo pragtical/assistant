@@ -304,7 +304,15 @@ processtools.tools = {
       { name = "max_output_tokens", description = "Maximum output bytes to return before truncating.", type = "number", required = false },
       { name = "sandbox_permissions", description = "Optional permission request hint.", type = "string", required = false },
       { name = "justification", description = "Optional reason for elevated permissions.", type = "string", required = false },
-      { name = "prefix_rule", description = "Optional command prefix tokens for session approval.", type = "array", required = false }
+      {
+        name = "prefix_rule",
+        description = "Optional command prefix tokens for session approval.",
+        required = false,
+        schema = {
+          type = "array",
+          items = { type = "string" }
+        }
+      }
     }
   }),
   Tool:new({

@@ -607,6 +607,91 @@ test.describe("assistant app-server backend", function()
     test.equal(wrote_mode, true)
   end)
 
+  test.it("keeps streamed plans separate from prior commentary", function()
+    local proc = fake_proc({
+      '{"id":1,"result":{}}\n',
+      '{"id":2,"result":{"thread":{"id":"thr_1"}}}\n',
+      '{"id":3,"result":{"turn":{"id":"turn_1","status":"inProgress"}}}\n',
+      '{"method":"item/agentMessage/delta","params":{"itemId":"msg_1","delta":"Checking"}}\n',
+      '{"method":"item/completed","params":{"item":{"id":"msg_1","type":"agentMessage","phase":"commentary","text":"Checking"}}}\n',
+      '{"method":"item/plan/delta","params":{"itemId":"plan_1","delta":"# Plan"}}\n',
+      '{"method":"item/plan/delta","params":{"itemId":"plan_1","delta":"\\n\\n- Step"}}\n',
+      '{"method":"item/completed","params":{"item":{"id":"plan_1","type":"plan","text":"# Plan\\n\\n- Step"}}}\n',
+      '{"method":"turn/completed","params":{"turn":{"id":"turn_1","status":"completed"}}}\n'
+    })
+    process = {
+      REDIRECT_PIPE = real_process.REDIRECT_PIPE,
+      start = function(command)
+        test.equal(is_codex_appserver(command), true)
+        return proc
+      end
+    }
+
+    local agent = Codex()
+    agent.model = "gpt-5.3-codex"
+    local conversation = Conversation(agent, "project")
+    conversation.collaboration_mode = "plan"
+    conversation:add("user", "plan", { autosave = false })
+    local backend = AppServerBackend()
+    local final_response
+    local stream_kinds = {}
+    local contaminated = false
+
+    backend:send(agent, conversation, function(ok, _, text, meta)
+      if ok and meta and meta.stream_kind then
+        stream_kinds[#stream_kinds + 1] = meta.stream_kind
+        if meta.stream_kind == "plan" and tostring(text or ""):find("Checking", 1, true) then
+          contaminated = true
+        end
+      end
+      if ok and meta and meta.done then final_response = text end
+    end)
+
+    coroutine.yield(0.4)
+
+    test.equal(final_response, "# Plan\n\n- Step")
+    test.equal(contaminated, false)
+    test.equal(stream_kinds[1], "assistant")
+    test.equal(stream_kinds[#stream_kinds], "plan")
+  end)
+
+  test.it("updates app-server command activity instead of duplicating it", function()
+    local proc = fake_proc({
+      '{"id":1,"result":{}}\n',
+      '{"id":2,"result":{"thread":{"id":"thr_1"}}}\n',
+      '{"id":3,"result":{"turn":{"id":"turn_1","status":"inProgress"}}}\n',
+      '{"method":"item/started","params":{"item":{"id":"cmd_1","type":"commandExecution","status":"inProgress","command":"make test","cwd":"project"}}}\n',
+      '{"method":"item/completed","params":{"item":{"id":"cmd_1","type":"commandExecution","status":"completed","exitCode":0,"command":"make test","cwd":"project","aggregatedOutput":"ok\\n"}}}\n',
+      '{"method":"item/agentMessage/delta","params":{"itemId":"msg_1","delta":"done"}}\n',
+      '{"method":"turn/completed","params":{"turn":{"id":"turn_1","status":"completed"}}}\n'
+    })
+    process = {
+      REDIRECT_PIPE = real_process.REDIRECT_PIPE,
+      start = function(command)
+        test.equal(is_codex_appserver(command), true)
+        return proc
+      end
+    }
+
+    local agent = Codex()
+    local conversation = Conversation(agent, "project")
+    conversation:add("user", "run", { autosave = false })
+    local backend = AppServerBackend()
+
+    backend:send(agent, conversation, function() end)
+
+    coroutine.yield(0.4)
+
+    local activities = {}
+    for _, message in ipairs(conversation.messages) do
+      if message.role == "activity" then table.insert(activities, message) end
+    end
+    test.equal(#activities, 1)
+    test.equal(activities[1].message:find("Status: completed", 1, true) ~= nil, true)
+    test.equal(activities[1].message:find("Output:", 1, true) ~= nil, true)
+    test.equal(activities[1].message:find("ok", 1, true) ~= nil, true)
+  end)
+
   test.it("maps legacy implementation mode to default collaboration payload", function()
     local proc = fake_proc({
       '{"id":1,"result":{}}\n',

@@ -1728,7 +1728,7 @@ filetools.tools = {
     params = {
       { name = "directory", description = "Directory to search.", type = "string" },
       { name = "text", description = "Search query. Interpreted as literal text, a Lua pattern, or a regular expression according to search_type.", type = "string" },
-      { name = "search_type", description = "How to interpret text: plain for literal substring search, luapattern for Lua patterns, regex for regular expressions. Default: plain.", type = "string", enum = { "plain", "regex", "luapattern" } }
+      { name = "search_type", description = "How to interpret text: plain for literal substring search, luapattern for Lua patterns, regex for regular expressions. Default: plain.", type = "string", enum = { "plain", "regex", "luapattern" }, required = false }
     }
   }),
   Tool:new({
@@ -1744,8 +1744,8 @@ filetools.tools = {
     requires_approval = read_approval("directory"),
     params = {
       { name = "directory", description = "Directory to list.", type = "string" },
-      { name = "recursive", description = "Whether to recurse into subdirectories.", type = "boolean" },
-      { name = "max_results", description = "Maximum number of paths to return.", type = "number" },
+      { name = "recursive", description = "Whether to recurse into subdirectories. Default: false.", type = "boolean", required = false },
+      { name = "max_results", description = "Maximum number of paths to return. Default: 500.", type = "number", required = false },
       { name = "pattern", description = "Optional plain text path filter. Omit this field when no filter is needed; do not send None/null.", type = "string", required = false }
     }
   }),

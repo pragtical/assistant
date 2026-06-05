@@ -70,7 +70,7 @@ gittools.tools = {
     requires_approval = read_approval("directory"),
     params = {
       { name = "directory", description = "Project directory.", type = "string" },
-      { name = "pathspec", description = "Optional pathspec to diff.", type = "string" }
+      { name = "pathspec", description = "Optional pathspec to diff.", type = "string", required = false }
     }
   })
 }

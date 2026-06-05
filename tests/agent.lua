@@ -2618,6 +2618,47 @@ test.describe("assistant agent", function()
     test.same(schema.properties.plan.items.required, { "step", "status" })
   end)
 
+  test.it("keeps built-in tool schemas aligned with callback defaults", function()
+    local agent = tools.register_agent_tools(Ollama({ stream = false }))
+    local generated = {}
+    for _, item in ipairs(agent:generate_tools_info() or {}) do
+      generated[item["function"].name] = item["function"].parameters
+    end
+
+    local function required_for(name)
+      test.not_nil(generated[name])
+      local required = {}
+      for _, field in ipairs(generated[name].required or {}) do
+        required[field] = true
+      end
+      return required
+    end
+
+    test.same(generated.search.required, { "directory", "text" })
+    local search_required = required_for("search")
+    test.equal(search_required.search_type, nil)
+    test.same(generated.search.properties.search_type.enum, { "plain", "regex", "luapattern" })
+
+    test.same(generated.list.required, { "directory" })
+    local list_required = required_for("list")
+    test.equal(list_required.recursive, nil)
+    test.equal(list_required.max_results, nil)
+    test.equal(list_required.pattern, nil)
+
+    test.same(generated.git_diff.required, { "directory" })
+    test.equal(required_for("git_diff").pathspec, nil)
+
+    test.same(generated.edit.required, { "path", "edits" })
+    test.equal(required_for("edit").oldText, nil)
+    test.equal(required_for("edit").newText, nil)
+    test.same(generated.edit.properties.edits.items.required, { "oldText", "newText" })
+
+    local prefix_rule = generated.exec_command.properties.prefix_rule
+    test.equal(prefix_rule.type, "array")
+    test.equal(prefix_rule.items.type, "string")
+    test.equal(required_for("exec_command").prefix_rule, nil)
+  end)
+
   test.it("sends compact default tool schemas for web requests", function()
     local agent = tools.register_agent_tools(Ollama({ stream = false }))
     local conversation = Conversation(agent, "project")

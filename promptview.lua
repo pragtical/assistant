@@ -1329,6 +1329,8 @@ function PromptView:dispatch_prompt_turn(text)
       self.conversation:remove(self.pending_assistant)
     end
     self.pending_assistant = nil
+    self.pending_assistant_stream_kind = nil
+    self.pending_assistant_stream_id = nil
     self.pending_streaming_transcript_text = nil
     self.streaming_transcript_follow_bottom = nil
     self.streaming_transcript_last_scroll_y = nil
@@ -1341,6 +1343,38 @@ function PromptView:dispatch_prompt_turn(text)
     if self.transcript and self.transcript.clear_partial_text then
       self.transcript:clear_partial_text()
     end
+  end
+
+  ---Commit the current partial assistant before a different backend stream starts.
+  local function commit_pending_assistant_for_stream_switch()
+    if not self.pending_assistant then return end
+    if self.pending_assistant.message == "" then
+      self.conversation:remove(self.pending_assistant)
+    else
+      self:commit_streaming_transcript(self.pending_assistant)
+    end
+    self.pending_assistant = nil
+    self.pending_assistant_stream_kind = nil
+    self.pending_assistant_stream_id = nil
+    self.pending_streaming_transcript_text = nil
+    self.streaming_assistant_heading_committed = nil
+    self.streaming_assistant_base_markdown = nil
+    if self.transcript and self.transcript.clear_partial_text then
+      self.transcript:clear_partial_text()
+    end
+  end
+
+  ---Return whether a cumulative backend stream moved to a different item.
+  ---@param meta table|nil
+  ---@return boolean
+  local function stream_identity_changed(meta)
+    if not (meta and meta.stream_kind) then return false end
+    if not self.pending_assistant then return false end
+    if self.pending_assistant_stream_kind == nil and self.pending_assistant.message ~= "" then
+      return true
+    end
+    return self.pending_assistant_stream_kind ~= meta.stream_kind
+      or self.pending_assistant_stream_id ~= meta.stream_id
   end
 
   ---Finish a streamed response that transitions into a user-facing request.
@@ -1452,9 +1486,20 @@ function PromptView:dispatch_prompt_turn(text)
         self:drain_prompt_queue()
         return
       end
+      if stream_identity_changed(meta) then
+        commit_pending_assistant_for_stream_switch()
+      end
       ensure_pending_assistant()
+      if meta and meta.stream_kind then
+        self.pending_assistant_stream_kind = meta.stream_kind
+        self.pending_assistant_stream_id = meta.stream_id
+      end
       if meta and meta.partial and not meta.done then
-        self.pending_assistant.message = merge_partial_response(self.pending_assistant.message, response)
+        if meta.cumulative then
+          self.pending_assistant.message = response or ""
+        else
+          self.pending_assistant.message = merge_partial_response(self.pending_assistant.message, response)
+        end
       else
         self.pending_assistant.message = response or ""
       end
@@ -1472,6 +1517,8 @@ function PromptView:dispatch_prompt_turn(text)
       if meta and meta.done then
         self:commit_streaming_transcript(self.pending_assistant)
         self.pending_assistant = nil
+        self.pending_assistant_stream_kind = nil
+        self.pending_assistant_stream_id = nil
         self.conversation:save()
         self.active_prompt_turn = false
         if title_prompt_after_first_response then
@@ -1487,6 +1534,8 @@ function PromptView:dispatch_prompt_turn(text)
           self.conversation:remove(self.pending_assistant)
         end
         self.pending_assistant = nil
+        self.pending_assistant_stream_kind = nil
+        self.pending_assistant_stream_id = nil
         self.pending_streaming_transcript_text = nil
         self.streaming_transcript_follow_bottom = nil
         self.streaming_transcript_last_scroll_y = nil
@@ -1508,6 +1557,8 @@ function PromptView:dispatch_prompt_turn(text)
       end
       self.conversation:add("error", err or "request failed")
       self.pending_assistant = nil
+      self.pending_assistant_stream_kind = nil
+      self.pending_assistant_stream_id = nil
       self.pending_streaming_transcript_text = nil
       self.streaming_transcript_follow_bottom = nil
       self.streaming_transcript_last_scroll_y = nil
