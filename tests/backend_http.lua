@@ -96,6 +96,45 @@ test.describe("assistant http backend", function()
     test.equal(err_result, "Chat request failed for Ollama: HTTP 401: invalid api key")
   end)
 
+  test.it("shows a reasoning activity for non-streaming responses", function()
+    local old_post = http.post
+    http.post = function(_, _, _, options)
+      options.on_done(true, nil, {
+        choices = {
+          {
+            message = {
+              role = "assistant",
+              content = "final answer",
+              reasoning_content = "first inspect, then decide"
+            }
+          }
+        }
+      }, { status = 200 })
+    end
+
+    local agent = Ollama({ stream = false })
+    local conversation = Conversation(agent, "project")
+    local backend = HttpBackend()
+    local response
+
+    backend:send(agent, conversation, function(ok, _, text, meta)
+      if ok and meta and meta.done then response = text end
+    end)
+
+    http.post = old_post
+    test.equal(response, "final answer")
+
+    local reasoning_shown = false
+    for _, message in ipairs(conversation.messages or {}) do
+      if message.role == "activity"
+        and tostring(message.message or ""):find("^Reasoning")
+      then
+        reasoning_shown = true
+      end
+    end
+    test.equal(reasoning_shown, true)
+  end)
+
   test.it("reports http status errors from streaming requests", function()
     local old_request = http.request
     http.request = function(_, _, options)

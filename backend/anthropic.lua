@@ -1213,6 +1213,21 @@ function AnthropicBackend:send(agent, conversation, callback)
     if conversation and conversation.save then conversation:save() end
   end
 
+  ---Show a one-shot reasoning activity for a non-streaming response.
+  ---The streaming path emits reasoning incrementally via emit_reasoning; this
+  ---mirrors it so reasoning is still shown when SSE streaming is disabled.
+  local function emit_response_reasoning(reasoning, round)
+    if not reasoning_activity_messages_enabled() then return end
+    local display = tostring(reasoning or ""):match("^%s*(.-)%s*$") or ""
+    if display == "" then return end
+    local key = "anthropic:reasoning:"
+      .. tostring(round or 0)
+      .. ":"
+      .. tostring(#(conversation.messages or {}) + 1)
+    upsert_activity(conversation, "Reasoning\n\n" .. display, key)
+    callback(true, nil, nil, { event = "activity_update", partial = true })
+  end
+
   ---Handle fail.
   local function fail(err, info, result)
     self.pending_tool_call = nil
@@ -1931,6 +1946,10 @@ function AnthropicBackend:send(agent, conversation, callback)
           conversation:append_raw_response("anthropic-response", result)
           local tool_calls = tools_available and parse_tools and agent:parse_tool_calls(result) or {}
           local response_text = agent:parse_response(result)
+          local reasoning_text = agent.parse_reasoning_content
+            and agent:parse_reasoning_content(result)
+            or nil
+          emit_response_reasoning(reasoning_text, round)
           local parsed_usage = agent:parse_usage(result)
           if parsed_usage and conversation.set_usage then
             conversation:set_usage(parsed_usage)

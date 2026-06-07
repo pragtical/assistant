@@ -534,6 +534,27 @@ function Anthropic:parse_response(result)
   return Anthropic.super.parse_response(self, result)
 end
 
+---Parse reasoning content.
+---Extract thinking content blocks from a complete Anthropic response.
+---@param result table|string|nil
+---@return string|nil reasoning_content
+function Anthropic:parse_reasoning_content(result)
+  if type(result) ~= "table" then return nil end
+  local content = result.content
+  if type(content) == "table" then
+    local parts = {}
+    for _, block in ipairs(content) do
+      if type(block) == "table" and block.type == "thinking" then
+        local text = type(block.thinking) == "string" and block.thinking
+          or (type(block.text) == "string" and block.text or "")
+        if text ~= "" then table.insert(parts, text) end
+      end
+    end
+    if #parts > 0 then return table.concat(parts, "\n") end
+  end
+  return Anthropic.super.parse_reasoning_content(self, result)
+end
+
 ---Parse tool calls.
 ---Extract tool_use content blocks from Anthropic response.
 ---@param result table|nil

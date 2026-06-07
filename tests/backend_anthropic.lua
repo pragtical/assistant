@@ -614,6 +614,41 @@ test.describe("assistant Anthropic backend", function()
     test.equal(title_value, nil)
   end)
 
+  test.it("shows a reasoning activity for non-streaming responses", function()
+    local old_post = http.post
+    http.post = function(_, _, _, options)
+      options.on_done(true, nil, {
+        role = "assistant",
+        content = {
+          { type = "thinking", thinking = "inspect then answer" },
+          { type = "text", text = "final answer" }
+        }
+      }, { status = 200 })
+    end
+
+    local agent = Anthropic({ stream = false })
+    local conversation = Conversation(agent, "project")
+    local backend = AnthropicBackend()
+    local response
+
+    backend:send(agent, conversation, function(ok, _, text, meta)
+      if ok and meta and meta.done then response = text end
+    end)
+
+    http.post = old_post
+    test.equal(response, "final answer")
+
+    local reasoning_shown = false
+    for _, message in ipairs(conversation.messages or {}) do
+      if message.role == "activity"
+        and tostring(message.message or ""):find("^Reasoning")
+      then
+        reasoning_shown = true
+      end
+    end
+    test.equal(reasoning_shown, true)
+  end)
+
   test.it("surfaces mid-stream error events instead of finishing empty", function()
     local old_request = http.request
     http.request = function(_, _, options)
