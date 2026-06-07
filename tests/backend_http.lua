@@ -1982,6 +1982,99 @@ test.describe("assistant http backend", function()
     test.equal(second_body.messages[#second_body.messages].role, "tool")
   end)
 
+  test.it("keeps same-index streamed tool calls separate by id", function()
+    local restore_background_threads = run_background_threads_immediately()
+    local old_request = http.request
+    local calls = 0
+    local executed = {}
+    local second_body
+    local function event(data)
+      return "data: " .. json.encode(data) .. "\n\n"
+    end
+    http.request = function(_, _, options)
+      calls = calls + 1
+      if calls == 1 then
+        options.on_header({ status = 200 })
+        options.on_chunk(event({
+          choices = {
+            {
+              delta = {
+                tool_calls = {
+                  {
+                    index = 0,
+                    id = "call_one",
+                    type = "function",
+                    ["function"] = {
+                      name = "read",
+                      arguments = json.encode({ path = "one.lua" })
+                    }
+                  },
+                  {
+                    index = 0,
+                    id = "call_two",
+                    type = "function",
+                    ["function"] = {
+                      name = "read",
+                      arguments = json.encode({ path = "two.lua" })
+                    }
+                  }
+                }
+              },
+              finish_reason = "tool_calls"
+            }
+          }
+        }))
+        options.on_done(true, nil, nil, { status = 200 })
+      else
+        second_body = json.decode(options.body)
+        options.on_header({ status = 200 })
+        options.on_chunk(event({
+          choices = {
+            {
+              delta = { content = "done" },
+              finish_reason = "stop"
+            }
+          }
+        }))
+        options.on_done(true, nil, nil, { status = 200 })
+      end
+    end
+
+    local agent = Ollama({ stream = true })
+    agent:register_tool("read", {
+      callback = function(path)
+        table.insert(executed, path)
+        return "contents for " .. tostring(path)
+      end,
+      params = {
+        { name = "path", type = "string" }
+      }
+    })
+    local conversation = Conversation(agent, "project")
+    local backend = HttpBackend()
+    local response
+
+    backend:send(agent, conversation, function(ok, _, text, meta)
+      if ok and meta and meta.event == "tool_call_request" then
+        backend:resolve_tool_call(agent, conversation, meta.request, "allow", function() end)
+      elseif ok and meta and meta.done then
+        response = text
+      end
+    end)
+
+    http.request = old_request
+    restore_background_threads()
+    test.same(executed, { "one.lua", "two.lua" })
+    test.equal(response, "done")
+    local provider_calls = second_body.messages[#second_body.messages - 2].tool_calls
+    test.equal(#provider_calls, 2)
+    test.equal(provider_calls[1]["function"].name, "read")
+    test.equal(provider_calls[2]["function"].name, "read")
+    test.equal(provider_calls[1]["function"].name:find("readread", 1, true), nil)
+    test.equal(second_body.messages[#second_body.messages - 1].role, "tool")
+    test.equal(second_body.messages[#second_body.messages].role, "tool")
+  end)
+
   test.it("sends fresh tool results un-compacted and compacts them after final response", function()
     local restore_background_threads = run_background_threads_immediately()
     local old_post = http.post

@@ -754,13 +754,27 @@ end
 
 ---Append stream tool calls.
 local function append_stream_tool_calls(collected, deltas)
+  collected.items = collected.items or {}
+  collected.by_index = collected.by_index or {}
+  collected.by_identity = collected.by_identity or {}
   for _, delta in ipairs(deltas or {}) do
     local index = delta.index or delta.item_id or 0
-    local item = collected[index]
+    local identity = delta.id or delta.call_id or delta.item_id
+    local item = identity and collected.by_identity[identity] or nil
+    if not item and identity then
+      local current = collected.by_index[index]
+      if current and (current.id == identity or current.call_id == identity or current.item_id == identity) then
+        item = current
+      end
+    end
+    if not item and not identity then
+      item = collected.by_index[index]
+    end
     if not item then
       item = {
         index = index,
         order = tonumber(delta.index),
+        sequence = #collected.items + 1,
         id = delta.id,
         call_id = delta.call_id,
         item_id = delta.item_id,
@@ -769,11 +783,15 @@ local function append_stream_tool_calls(collected, deltas)
         name = "",
         arguments_text = ""
       }
-      collected[index] = item
+      table.insert(collected.items, item)
     end
     item.id = delta.id or item.id
     item.call_id = delta.call_id or item.call_id
     item.item_id = delta.item_id or item.item_id
+    collected.by_index[index] = item
+    if item.id then collected.by_identity[item.id] = item end
+    if item.call_id then collected.by_identity[item.call_id] = item end
+    if item.item_id then collected.by_identity[item.item_id] = item end
     item.format = delta.format or item.format
     item.order = tonumber(delta.index) or item.order
     item.type = delta.type or item.type or "function"
@@ -904,26 +922,36 @@ end
 
 ---Handle finalize stream tool calls.
 local function finalize_stream_tool_calls(collected)
-  local indexes = {}
-  for index in pairs(collected) do
-    table.insert(indexes, index)
+  local items = {}
+  if type(collected.items) == "table" then
+    for _, item in ipairs(collected.items) do
+      table.insert(items, item)
+    end
+  else
+    for _, item in pairs(collected) do
+      if type(item) == "table" and item.name then
+        table.insert(items, item)
+      end
+    end
   end
-  table.sort(indexes, function(a, b)
-    local item_a = collected[a]
-    local item_b = collected[b]
+  table.sort(items, function(item_a, item_b)
     local order_a = item_a and item_a.order
     local order_b = item_b and item_b.order
     if order_a and order_b and order_a ~= order_b then return order_a < order_b end
     if order_a and not order_b then return true end
     if order_b and not order_a then return false end
-    return tostring(a) < tostring(b)
+    local sequence_a = item_a and item_a.sequence
+    local sequence_b = item_b and item_b.sequence
+    if sequence_a and sequence_b and sequence_a ~= sequence_b then return sequence_a < sequence_b end
+    if sequence_a and not sequence_b then return true end
+    if sequence_b and not sequence_a then return false end
+    return tostring(item_a and item_a.index) < tostring(item_b and item_b.index)
   end)
   local calls = {}
-  for _, index in ipairs(indexes) do
-    local item = collected[index]
+  for _, item in ipairs(items) do
     if item and item.name and item.name ~= "" then
       local arguments = decode_stream_tool_arguments(item.arguments_text)
-      local id = item.id or ("call_stream_" .. tostring(index))
+      local id = item.id or ("call_stream_" .. tostring(item.index or #calls + 1))
       local format = item.format == "responses" and "responses" or "chat-stream"
       local raw
       if format == "responses" then
