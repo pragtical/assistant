@@ -2732,9 +2732,12 @@ test.describe("assistant agent", function()
     end
 
     test.equal(payload.messages[1].content:find("Collaboration mode: Plan", 1, true) ~= nil, true)
+    test.equal(payload.messages[1].content:find("until the host switches", 1, true) ~= nil, true)
+    test.equal(payload.messages[1].content:find("Explore first, ask second", 1, true) ~= nil, true)
     test.equal(payload.messages[1].content:find("Markdown plan", 1, true) ~= nil, true)
     test.equal(payload.messages[1].content:find("Plan Drafted!", 1, true) ~= nil, true)
     test.equal(payload.messages[1].content:find("must call implement_plan", 1, true) ~= nil, true)
+    test.equal(payload.messages[1].content:find("call implement_plan in the same turn", 1, true) ~= nil, true)
     test.equal(names.read, true)
     test.equal(names.search, true)
     test.equal(names.update_plan, nil)
@@ -3107,6 +3110,9 @@ test.describe("assistant agent", function()
     end
 
     test.equal(payload.instructions:find("Collaboration mode: Plan", 1, true) ~= nil, true)
+    test.equal(payload.instructions:find("until the host switches", 1, true) ~= nil, true)
+    test.equal(payload.instructions:find("Explore first, ask second", 1, true) ~= nil, true)
+    test.equal(payload.instructions:find("call implement_plan in the same turn", 1, true) ~= nil, true)
     test.equal(names.read, true)
     test.equal(names.update_plan, nil)
     test.equal(names.implement_plan, true)
