@@ -614,6 +614,53 @@ test.describe("assistant Anthropic backend", function()
     test.equal(title_value, nil)
   end)
 
+  test.it("surfaces mid-stream error events instead of finishing empty", function()
+    local old_request = http.request
+    http.request = function(_, _, options)
+      options.on_header({ status = 200 })
+      options.on_chunk(event("message_start", {
+        message = { usage = { input_tokens = 10, output_tokens = 0 } }
+      }))
+      options.on_chunk(event("content_block_start", {
+        index = 0,
+        content_block = { type = "text", text = "" }
+      }))
+      options.on_chunk(event("content_block_delta", {
+        index = 0,
+        delta = { type = "text_delta", text = "partial" }
+      }))
+      options.on_chunk(event("error", {
+        type = "error",
+        error = { type = "overloaded_error", message = "Overloaded" }
+      }))
+      -- Anthropic can stop the stream after an error event without a
+      -- message_stop while the HTTP status stays 200.
+      options.on_done(true, nil, nil, { status = 200 })
+    end
+
+    local agent = Anthropic({ stream = true })
+    local conversation = Conversation(agent, "project")
+    local backend = AnthropicBackend()
+    local ok_value
+    local err_value
+    local done_value = false
+
+    backend:send(agent, conversation, function(ok, err, _, meta)
+      if ok and meta and meta.done then
+        done_value = true
+      elseif not ok then
+        ok_value = ok
+        err_value = err
+      end
+    end)
+
+    http.request = old_request
+    test.equal(done_value, false)
+    test.equal(ok_value, false)
+    test.not_nil(err_value)
+    test.not_nil(tostring(err_value):find("Overloaded", 1, true))
+  end)
+
   test.it("does not continue plan-mode tools after a completed proposed plan exists", function()
     local old_post = http.post
     local calls = 0

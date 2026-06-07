@@ -952,38 +952,6 @@ local function flush_anthropic_stream_pending(pending, on_event)
   parse_anthropic_sse_chunk(pending .. "\n\n", "", on_event)
 end
 
----Handle finalize anthropic stream tool calls.
-local function finalize_anthropic_stream_tool_calls(collected)
-  local indexes = {}
-  for index in pairs(collected) do
-    table.insert(indexes, index)
-  end
-  table.sort(indexes)
-  local calls = {}
-  for _, index in ipairs(indexes) do
-    local item = collected[index]
-    if item and item.name and item.name ~= "" then
-      local arguments = {}
-      local ok, decoded = pcall(json.decode, item.arguments_text)
-      if ok and type(decoded) == "table" then arguments = decoded end
-      table.insert(calls, {
-        id = item.id or ("call_anthropic_" .. tostring(index)),
-        name = item.name,
-        arguments = arguments,
-        arguments_text = item.arguments_text,
-        format = "anthropic",
-        raw = {
-          type = "tool_use",
-          id = item.id,
-          name = item.name,
-          input = arguments
-        }
-      })
-    end
-  end
-  return calls
-end
-
 ---Return whether tool payload is available.
 local function has_tool_payload(agent)
   return agent
@@ -1035,11 +1003,10 @@ function AnthropicBackend:list_models(agent, callback)
   agent:set_loading(true)
   -- Anthropic has no public model listing endpoint; return curated list.
   local known_models = {
-    "claude-sonnet-4-20250514",
+    "claude-opus-4-20250514",
     "claude-sonnet-4-20250514",
     "claude-3-5-sonnet-20241022",
     "claude-3-5-haiku-20241022",
-    "claude-opus-4-20250514",
     "claude-3-opus-20240229",
     "claude-3-haiku-20240307"
   }
@@ -1096,6 +1063,41 @@ local function refresh_model_metadata(agent, conversation, callback)
       callback()
     end
   })
+end
+
+---Handle request error.
+local function request_error(action, agent, info, result, fallback)
+  local status = info and tonumber(info.status)
+  local details = extract_error(result) or fallback
+  if type(details) == "string" and details:lower():find("timed out", 1, true) then
+    local timeout_ms = configured_timeout_ms(agent)
+    local timeout_text = timeout_ms and string.format(" after %.0f seconds", timeout_ms / 1000) or ""
+    return string.format(
+      "%s timed out for %s%s. Increase `plugins.assistant.request_timeout_ms` for slower models.",
+      action,
+      agent.display_name or agent.name or "agent",
+      timeout_text
+    )
+  end
+  if not details and status == 429 then
+    details = "rate limit or quota exceeded; check provider billing, usage limits, and retry later"
+  end
+  details = details or "request failed"
+  if status then
+    return string.format(
+      "%s failed for %s: HTTP %d: %s",
+      action,
+      agent.display_name or agent.name or "agent",
+      status,
+      details
+    )
+  end
+  return string.format(
+    "%s failed for %s: %s",
+    action,
+    agent.display_name or agent.name or "agent",
+    details
+  )
 end
 
 ---Handle local compact.
@@ -1186,41 +1188,6 @@ function AnthropicBackend:generate_conversation_title(agent, conversation, promp
       end
     end
   })
-end
-
----Handle request error.
-local function request_error(action, agent, info, result, fallback)
-  local status = info and tonumber(info.status)
-  local details = extract_error(result) or fallback
-  if type(details) == "string" and details:lower():find("timed out", 1, true) then
-    local timeout_ms = configured_timeout_ms(agent)
-    local timeout_text = timeout_ms and string.format(" after %.0f seconds", timeout_ms / 1000) or ""
-    return string.format(
-      "%s timed out for %s%s. Increase `plugins.assistant.request_timeout_ms` for slower models.",
-      action,
-      agent.display_name or agent.name or "agent",
-      timeout_text
-    )
-  end
-  if not details and status == 429 then
-    details = "rate limit or quota exceeded; check provider billing, usage limits, and retry later"
-  end
-  details = details or "request failed"
-  if status then
-    return string.format(
-      "%s failed for %s: HTTP %d: %s",
-      action,
-      agent.display_name or agent.name or "agent",
-      status,
-      details
-    )
-  end
-  return string.format(
-    "%s failed for %s: %s",
-    action,
-    agent.display_name or agent.name or "agent",
-    details
-  )
 end
 
 ---Handle send.
@@ -1801,6 +1768,14 @@ function AnthropicBackend:send(agent, conversation, callback)
 
       if event_type == "message_stop" then
         -- Finalize; tool calls are collected from content_blocks
+        return
+      end
+
+      if event_type == "error" then
+        -- Anthropic can emit a mid-stream `error` event over an HTTP 200
+        -- response (for example overloaded_error). Capture it so on_done
+        -- surfaces a failure instead of finishing with truncated content.
+        stream_error = decoded.error or decoded
         return
       end
 
