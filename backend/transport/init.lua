@@ -1,5 +1,4 @@
 local StdioTransport = require "plugins.assistant.backend.transport.stdio"
-local TcpTransport = require "plugins.assistant.backend.transport.tcp"
 
 ---@alias assistant.transport.kind
 ---| '"stdio"'
@@ -65,6 +64,7 @@ function Transport:stop() end
 ---@return assistant.transport
 function Transport.new(options)
   if (options.transport or "stdio") == "tcp" then
+    local TcpTransport = require "plugins.assistant.backend.transport.tcp"
     return TcpTransport(options)
   end
   return StdioTransport(options)

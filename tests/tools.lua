@@ -1242,6 +1242,28 @@ Here is the patch:
     test.equal(result:find("web_search", 1, true), nil)
   end)
 
+  test.it("omits web tools when net is disabled", function()
+    local old_net = rawget(_G, "net")
+    local old_tools = package.loaded["plugins.assistant.tools"]
+    rawset(_G, "net", nil)
+    package.loaded["plugins.assistant.tools"] = nil
+
+    local no_net_tools = require "plugins.assistant.tools"
+    local agent = Agent()
+    no_net_tools.register_agent_tools(agent)
+    local ok, result = no_net_tools.tool_catalog()
+
+    rawset(_G, "net", old_net)
+    package.loaded["plugins.assistant.tools"] = old_tools
+
+    test.equal(agent.tools.web_fetch, nil)
+    test.equal(agent.tools.web_search, nil)
+    test.equal(agent.tools.web_find, nil)
+    test.equal(ok, true)
+    test.equal(result:find("web_search", 1, true), nil)
+    test.equal(result:find("read(", 1, true) ~= nil, true)
+  end)
+
   test.it("filters the assistant tool catalog to selected tool names", function()
     local ok, result = tools.tool_catalog(nil, {
       "list",

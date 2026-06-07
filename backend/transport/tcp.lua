@@ -1,5 +1,5 @@
 local core = require "core"
-local net = require "net"
+local net = rawget(_G, "net")
 local Object = require "core.object"
 
 local CONNECT_TIMEOUT_MS = 10000
@@ -68,6 +68,12 @@ function TcpTransport:new(options)
   self.next_attempt = system.get_time()
   self.last_error = nil
   self.state = "resolving"
+
+  if not net then
+    self.startup_error = "tcp transport requires the Pragtical net module"
+    self.state = "failed"
+    return
+  end
 
   if not self.host or self.host == "" then
     self.startup_error = "tcp transport requires a host"

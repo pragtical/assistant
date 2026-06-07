@@ -5,31 +5,60 @@ local command = require "core.command"
 local config = require "core.config"
 local keymap = require "core.keymap"
 
+local HAS_NET = rawget(_G, "net") ~= nil
+
 local Conversation = require "plugins.assistant.conversation"
 local PromptView = require "plugins.assistant.promptview"
 local tools = require "plugins.assistant.tools"
 local agent_config = require "plugins.assistant.agent_config"
 local ConversationsList = require "plugins.assistant.ui.conversationslist"
 local MemoriesList = require "plugins.assistant.ui.memorieslist"
-local HttpBackend = require "plugins.assistant.backend.http"
 local CliBackend = require "plugins.assistant.backend.cli"
 local AppServerBackend = require "plugins.assistant.backend.appserver"
 local AcpBackend = require "plugins.assistant.backend.acp"
-local AnthropicBackend = require "plugins.assistant.backend.anthropic"
-local Ollama = require "plugins.assistant.agent.ollama"
-local LlamaCpp = require "plugins.assistant.agent.llamacpp"
-local Lms = require "plugins.assistant.agent.lms"
-local OpenAI = require "plugins.assistant.agent.openai"
 local Codex = require "plugins.assistant.agent.codex"
 local Acp = require "plugins.assistant.agent.acp"
 local Copilot = require "plugins.assistant.agent.copilot"
-local Anthropic = require "plugins.assistant.agent.anthropic"
-local DeepSeek = require "plugins.assistant.agent.deepseek"
-local DeepSeekAnthropic = require "plugins.assistant.agent.deepseek_anthropic"
+local HttpBackend = HAS_NET and require "plugins.assistant.backend.http" or nil
+local AnthropicBackend = HAS_NET and require "plugins.assistant.backend.anthropic" or nil
+local Ollama = HAS_NET and require "plugins.assistant.agent.ollama" or nil
+local LlamaCpp = HAS_NET and require "plugins.assistant.agent.llamacpp" or nil
+local Lms = HAS_NET and require "plugins.assistant.agent.lms" or nil
+local OpenAI = HAS_NET and require "plugins.assistant.agent.openai" or nil
+local Anthropic = HAS_NET and require "plugins.assistant.agent.anthropic" or nil
+local DeepSeek = HAS_NET and require "plugins.assistant.agent.deepseek" or nil
+local DeepSeekAnthropic = HAS_NET and require "plugins.assistant.agent.deepseek_anthropic" or nil
+
+if not HAS_NET then
+  core.warn(
+    "Assistant: Pragtical net module is disabled; HTTP providers and web tools are unavailable."
+  )
+end
+
+local AGENT_CHOICES = {
+  { "Codex", "codex" },
+  { "ACP", "acp" },
+  { "GitHub Copilot", "copilot" }
+}
+
+if HAS_NET then
+  AGENT_CHOICES = {
+    { "Ollama", "ollama" },
+    { "llama.cpp", "llamacpp" },
+    { "LM Studio", "lms" },
+    { "OpenAI", "openai" },
+    { "Codex", "codex" },
+    { "ACP", "acp" },
+    { "GitHub Copilot", "copilot" },
+    { "Anthropic", "anthropic" },
+    { "DeepSeek", "deepseek" },
+    { "DeepSeek Anthropic", "deepseek_anthropic" }
+  }
+end
 
 config.plugins.assistant = common.merge({
-  agent = "ollama",
-  backend = "http",
+  agent = HAS_NET and "ollama" or "codex",
+  backend = HAS_NET and "http" or "appserver",
   agents = agent_config.defaults(),
   debug = false,
   log_protocol = false,
@@ -71,19 +100,8 @@ config.plugins.assistant = common.merge({
       description = "Default assistant provider.",
       path = "agent",
       type = "selection",
-      default = "ollama",
-      values = {
-        { "Ollama", "ollama" },
-        { "llama.cpp", "llamacpp" },
-        { "LM Studio", "lms" },
-        { "OpenAI", "openai" },
-        { "Codex", "codex" },
-        { "ACP", "acp" },
-        { "GitHub Copilot", "copilot" },
-        { "Anthropic", "anthropic" },
-        { "DeepSeek", "deepseek" },
-        { "DeepSeek Anthropic", "deepseek_anthropic" }
-      }
+      default = HAS_NET and "ollama" or "codex",
+      values = AGENT_CHOICES
     },
     {
       label = "Agent Settings",
@@ -352,10 +370,23 @@ function assistant.get_agent(name)
   return assistant.agents[name or config.plugins.assistant.agent]
 end
 
+---Return the preferred available agent name.
+---@return string?
+local function default_agent_name()
+  local preferred = config.plugins.assistant.agent
+  if assistant.agents[preferred] then return preferred end
+  for _, name in ipairs({ "codex", "copilot", "acp" }) do
+    if assistant.agents[name] then return name end
+  end
+  for name in pairs(assistant.agents) do
+    return name
+  end
+end
+
 ---Return registered assistant agents for UI selection.
 ---@return table[] agents Agent choices with `name`, `label`, and `default` fields.
 function assistant.list_agents()
-  local configured_name = config.plugins.assistant.agent
+  local configured_name = default_agent_name()
   local choices = {}
   for name, cls in pairs(assistant.agents) do
     local label = name
@@ -397,20 +428,45 @@ end
 
 ---Handle configured agent.
 ---@param name string?
----@return assistant.Agent
+---@return assistant.Agent?
 local function configured_agent(name)
-  local cls = assistant.get_agent(name)
-  local agent = cls and cls() or Ollama()
+  local requested = name or config.plugins.assistant.agent
+  local cls = assistant.get_agent(requested)
+  if not cls then
+    if name then
+      core.error(
+        "Assistant: agent '%s' is unavailable%s",
+        tostring(name),
+        HAS_NET and "" or " because the Pragtical net module is disabled"
+      )
+      return nil
+    end
+    requested = default_agent_name()
+    cls = requested and assistant.agents[requested] or nil
+  end
+  if not cls then
+    core.error("Assistant: no assistant agents are registered")
+    return nil
+  end
+  local agent = cls()
   agent_config.apply(agent, config.plugins.assistant)
   return tools.register_agent_tools(agent)
 end
 
 ---Handle configured backend.
 ---@param name string?
----@return assistant.Backend
+---@return assistant.Backend?
 local function configured_backend(name)
   local cls = assistant.get_backend(name)
-  return cls and cls() or HttpBackend()
+  if not cls then
+    core.error(
+      "Assistant: backend '%s' is unavailable%s",
+      tostring(name or config.plugins.assistant.backend),
+      HAS_NET and "" or " because the Pragtical net module is disabled"
+    )
+    return nil
+  end
+  return cls()
 end
 
 ---Register an assistant tool contributed by another plugin.
@@ -467,7 +523,9 @@ end
 ---@return assistant.PromptView
 function assistant.start_conversation(agent_name)
   local agent = configured_agent(agent_name)
+  if not agent then return end
   local backend = configured_backend(agent.backend)
+  if not backend then return end
   return open_prompt_view(PromptView({ agent = agent, backend = backend }))
 end
 
@@ -529,12 +587,15 @@ function assistant.resume_conversation(id, project_dir)
     return
   end
   local agent = configured_agent(conversation.agent)
+  if not agent then return end
   agent.model = conversation.model or agent.model
   conversation.backend = agent.backend
+  local backend = configured_backend(agent.backend)
+  if not backend then return end
   return open_prompt_view(PromptView({
     conversation = conversation,
     agent = agent,
-    backend = configured_backend(agent.backend)
+    backend = backend
   }))
 end
 
@@ -644,7 +705,9 @@ end
 ---@param agent_name string?
 function assistant.list_models(agent_name)
   local agent = configured_agent(agent_name)
+  if not agent then return end
   local backend = configured_backend(agent.backend)
+  if not backend then return end
   backend:list_models(agent, function(ok, err, models)
     if not ok then
       core.error("Assistant: could not list models: %s", err or "unknown error")
@@ -661,18 +724,22 @@ function assistant.list_models(agent_name)
   end)
 end
 
-assistant.register_agent("ollama", Ollama)
-assistant.register_agent("llamacpp", LlamaCpp)
-assistant.register_agent("lms", Lms)
-assistant.register_agent("openai", OpenAI)
+if HAS_NET then
+  assistant.register_agent("ollama", Ollama)
+  assistant.register_agent("llamacpp", LlamaCpp)
+  assistant.register_agent("lms", Lms)
+  assistant.register_agent("openai", OpenAI)
+end
 assistant.register_agent("codex", Codex)
 assistant.register_agent("acp", Acp)
 assistant.register_agent("copilot", Copilot)
-assistant.register_agent("anthropic", Anthropic)
-assistant.register_agent("deepseek", DeepSeek)
-assistant.register_agent("deepseek_anthropic", DeepSeekAnthropic)
-assistant.register_backend("http", HttpBackend)
-assistant.register_backend("anthropic", AnthropicBackend)
+if HAS_NET then
+  assistant.register_agent("anthropic", Anthropic)
+  assistant.register_agent("deepseek", DeepSeek)
+  assistant.register_agent("deepseek_anthropic", DeepSeekAnthropic)
+  assistant.register_backend("http", HttpBackend)
+  assistant.register_backend("anthropic", AnthropicBackend)
+end
 assistant.register_backend("cli", CliBackend)
 assistant.register_backend("appserver", AppServerBackend)
 assistant.register_backend("acp", AcpBackend)

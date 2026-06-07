@@ -2,7 +2,6 @@ local context = require "plugins.assistant.tool_context"
 local file = require "plugins.assistant.tool.file"
 local applypatch = require "plugins.assistant.tool.applypatch"
 local process = require "plugins.assistant.tool.process"
-local web = require "plugins.assistant.tool.web"
 local git = require "plugins.assistant.tool.git"
 local misc = require "plugins.assistant.tool.misc"
 local memory = require "plugins.assistant.tool.memory"
@@ -15,15 +14,19 @@ local Tool = require "plugins.assistant.tool"
 ---agent.
 ---@class assistant.tools
 local tools = {}
+local has_net = rawget(_G, "net") ~= nil
+local web = has_net and require "plugins.assistant.tool.web" or nil
 local modules = {
   misc,
   file,
   applypatch,
   process,
-  web,
   git,
   memory
 }
+if has_net then
+  table.insert(modules, 5, web)
+end
 local external_tools = {}
 
 tools.set_confirm_write = context.set_confirm_write
@@ -46,9 +49,9 @@ tools.send_eof = process.send_eof
 tools.interrupt_exec = process.interrupt_exec
 tools.close_exec = process.close_exec
 
-tools.web_fetch = web.web_fetch
-tools.web_search = web.web_search
-tools.web_find = web.web_find
+tools.web_fetch = web and web.web_fetch or nil
+tools.web_search = web and web.web_search or nil
+tools.web_find = web and web.web_find or nil
 
 tools.git_status = git.git_status
 tools.git_diff = git.git_diff

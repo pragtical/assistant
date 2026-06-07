@@ -78,6 +78,10 @@ function misctools.tool_catalog(category, selected_names)
     }
   }
   local order = { "web", "files", "edit", "shell", "git", "memory", "interaction" }
+  if not rawget(_G, "net") then
+    groups.web = nil
+    order = { "files", "edit", "shell", "git", "memory", "interaction" }
+  end
   local lines = {
     "Available assistant tools are grouped below."
   }

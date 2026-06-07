@@ -278,6 +278,23 @@ test.describe("assistant plugin init", function()
     test.equal(copilot.command[3], "--stdio")
   end)
 
+  test.it("reports missing net for tcp transport", function()
+    local old_net = rawget(_G, "net")
+    rawset(_G, "net", nil)
+
+    local TcpTransport = dofile("backend/transport/tcp.lua")
+    local transport = TcpTransport({
+      transport = "tcp",
+      host = "127.0.0.1",
+      port = 7777
+    })
+
+    rawset(_G, "net", old_net)
+
+    test.equal(transport.startup_error, "tcp transport requires the Pragtical net module")
+    test.equal(transport:is_starting(), false)
+  end)
+
   test.it("opens agent picker for optional new conversation selection", function()
     local entered_label
     local entered_options
