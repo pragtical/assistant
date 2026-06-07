@@ -426,6 +426,36 @@ function context.run_process(command, cwd, timeout_ms)
   end
   local stdout, stderr = {}, {}
   local started = system.get_time()
+  ---Drain any output still buffered in the pipes after the process exits or is
+  ---killed, then build the result. Without this final drain, output produced
+  ---between the last incremental read and process exit is lost.
+  local function finish(exit_code, timed_out)
+    while true do
+      local out = proc:read_stdout(4096)
+      if not out or out == "" then break end
+      table.insert(stdout, out)
+    end
+    while true do
+      local errout = proc:read_stderr(4096)
+      if not errout or errout == "" then break end
+      table.insert(stderr, errout)
+    end
+    local out_text, out_truncated, out_omitted, out_bytes = context.limit_text(table.concat(stdout))
+    local err_text, err_truncated, err_omitted, err_bytes = context.limit_text(table.concat(stderr))
+    return {
+      exit_code = exit_code,
+      timed_out = timed_out,
+      wall_time_ms = math.floor((system.get_time() - started) * 1000),
+      stdout = out_text,
+      stderr = err_text,
+      stdout_bytes = out_bytes,
+      stderr_bytes = err_bytes,
+      stdout_truncated = out_truncated,
+      stderr_truncated = err_truncated,
+      stdout_omitted_bytes = out_omitted,
+      stderr_omitted_bytes = err_omitted
+    }
+  end
   while true do
     local out = proc:read_stdout(4096)
     local errout = proc:read_stderr(4096)
@@ -433,39 +463,11 @@ function context.run_process(command, cwd, timeout_ms)
     if errout and errout ~= "" then table.insert(stderr, errout) end
     local code = proc:wait(0)
     if code ~= nil then
-      local out_text, out_truncated, out_omitted, out_bytes = context.limit_text(table.concat(stdout))
-      local err_text, err_truncated, err_omitted, err_bytes = context.limit_text(table.concat(stderr))
-      return true, {
-        exit_code = code,
-        timed_out = false,
-        wall_time_ms = math.floor((system.get_time() - started) * 1000),
-        stdout = out_text,
-        stderr = err_text,
-        stdout_bytes = out_bytes,
-        stderr_bytes = err_bytes,
-        stdout_truncated = out_truncated,
-        stderr_truncated = err_truncated,
-        stdout_omitted_bytes = out_omitted,
-        stderr_omitted_bytes = err_omitted
-      }
+      return true, finish(code, false)
     end
     if timeout_ms and (system.get_time() - started) * 1000 >= timeout_ms then
       proc:kill()
-      local out_text, out_truncated, out_omitted, out_bytes = context.limit_text(table.concat(stdout))
-      local err_text, err_truncated, err_omitted, err_bytes = context.limit_text(table.concat(stderr))
-      return false, {
-        exit_code = -1,
-        timed_out = true,
-        wall_time_ms = math.floor((system.get_time() - started) * 1000),
-        stdout = out_text,
-        stderr = err_text,
-        stdout_bytes = out_bytes,
-        stderr_bytes = err_bytes,
-        stdout_truncated = out_truncated,
-        stderr_truncated = err_truncated,
-        stdout_omitted_bytes = out_omitted,
-        stderr_omitted_bytes = err_omitted
-      }
+      return false, finish(-1, true)
     end
     context.yield_ui()
   end

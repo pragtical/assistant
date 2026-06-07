@@ -1626,24 +1626,6 @@ function filetools.edit(path, edits, oldText, newText)
     if match.occurrences > 1 then
       return false, string.format("Found %d occurrences of edits[%d] in %s. Each oldText must be unique. Please provide more context to make it unique.", match.occurrences, index, tostring(path))
     end
-    if match.content ~= base_content then
-      base_content = match.content
-      matches = {}
-      for prior_index = 1, index - 1 do
-        if prior_index % 20 == 0 then context.yield_ui() end
-        local prior = edits[prior_index]
-        local prior_match = find_edit_match(base_content, normalize_to_lf(tostring(prior.oldText or "")))
-        if prior_match then
-          table.insert(matches, {
-            edit_index = prior_index,
-            index = prior_match.index,
-            length = prior_match.length,
-            new_text = normalize_to_lf(tostring(prior.newText or ""))
-          })
-        end
-      end
-      match = find_edit_match(base_content, old_text)
-    end
     table.insert(matches, {
       edit_index = index,
       index = match.index,
