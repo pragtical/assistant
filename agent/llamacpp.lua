@@ -29,7 +29,8 @@ function LlamaCpp:new(options)
     collaboration_modes = true,
     stream_responses = true,
     tool_calling = true,
-    local_compact = true
+    local_compact = true,
+    require_assistant_reasoning_content = true
   }, options.capabilities)
   self.super.new(self, options)
 end

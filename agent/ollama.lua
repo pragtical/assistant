@@ -35,7 +35,8 @@ function Ollama:new(options)
     tool_calling = true,
     keep_alive = true,
     local_compact = true,
-    vision = true
+    vision = true,
+    require_assistant_reasoning_content = true
   }, options.capabilities)
   self.super.new(self, options)
   self.keep_alive = options.keep_alive

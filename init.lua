@@ -66,7 +66,7 @@ config.plugins.assistant = common.merge({
   verbose_tool_calling = false,
   verbose_activity = false,
   reasoning_activity_messages = true,
-  persist_reasoning_content = false,
+  persist_reasoning_content = true,
   raw_markdown_line_wrapping = true,
   compact_tool_results = false,
   compact_tool_history = false,
@@ -283,10 +283,10 @@ config.plugins.assistant = common.merge({
     },
     {
       label = "Persist Reasoning Content",
-      description = "Persist and resend provider reasoning_content for all HTTP/OpenAI-compatible chat agents. DeepSeek enables this by default.",
+      description = "Persist and resend provider reasoning_content for HTTP/OpenAI-compatible chat agents.",
       path = "persist_reasoning_content",
       type = "toggle",
-      default = false
+      default = true
     },
     {
       label = "Raw Markdown Line Wrapping",

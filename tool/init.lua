@@ -16,6 +16,7 @@
 ---@field activity_markdown fun(call: table|nil, status: string|nil, result: any, context: table|nil): string|nil|nil Verbose activity Markdown.
 ---@field compact_activity_markdown fun(call: table|nil, status: string|nil, result: any, context: table|nil): string|nil|nil Compact activity Markdown.
 ---@field result_is_successful fun(call: table|nil, result_message: table|nil, context: table|nil): boolean|nil|nil Whether a historical result represents a successful operation.
+---@field denied_result fun(call: table|nil, context: table|nil): string|nil|nil Provider-facing result when the user denies execution.
 ---@field additional_properties boolean|nil JSON-schema additionalProperties value.
 
 ---Instantiated assistant tool.
@@ -39,6 +40,7 @@
 ---@field activity_markdown function|nil
 ---@field compact_activity_markdown function|nil
 ---@field result_is_successful function|nil
+---@field denied_result function|nil
 ---@field additional_properties boolean|nil
 local core = require "core"
 local json = require "core.json"
@@ -318,6 +320,14 @@ function Tool:compact_result(_, result)
   return Tool.compact_long_text(result, Tool.RESULT_CONTENT_LIMIT)
 end
 
+---Return the default provider-facing result for a denied tool call.
+---@param _ table|nil
+---@param _ table|nil
+---@return string
+function Tool:denied_result(_, _)
+  return "user denied tool execution"
+end
+
 ---Return the default activity label for this tool.
 ---@param _ table|nil
 ---@param _ string|nil
@@ -413,6 +423,9 @@ function Tool:registration(agent, facade)
   end
   registration.result_is_successful = registration.result_is_successful or function(call, result_message, context)
     return Tool.result_is_successful(registration, call, result_message, context)
+  end
+  registration.denied_result = registration.denied_result or function(call, context)
+    return Tool.denied_result(registration, call, context)
   end
   return registration
 end

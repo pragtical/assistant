@@ -95,7 +95,8 @@ function Agent:new(options)
     keep_alive = false,
     local_compact = false,
     vision = false,
-    keep_reasoning_content = false
+    keep_reasoning_content = false,
+    require_assistant_reasoning_content = false
   }, options.capabilities or {})
   self.collaboration_modes = options.collaboration_modes
   self.compact_implementation_tools = options.compact_implementation_tools == true
@@ -654,6 +655,15 @@ function Agent:provider_messages_for_conversation(conversation)
         message.reasoning_content = nil
       end
     end
+  elseif self:should_require_assistant_reasoning_content() then
+    for _, message in ipairs(messages) do
+      if type(message) == "table"
+        and message.role == "assistant"
+        and message.reasoning_content == nil
+      then
+        message.reasoning_content = ""
+      end
+    end
   end
   sanitize_provider_payload(messages)
   local instructions = self:get_mode_instructions(conversation)
@@ -1053,6 +1063,17 @@ function Agent:should_persist_reasoning_content()
   local conf = config.plugins and config.plugins.assistant or {}
   return conf.persist_reasoning_content == true
     or self:has_capability("keep_reasoning_content")
+end
+
+---Return whether replayed assistant chat messages need reasoning_content.
+---
+---Some OpenAI-compatible reasoning providers validate multi-turn histories
+---more reliably when every replayed assistant message carries the
+---reasoning_content field, even when that turn had no captured reasoning.
+---@return boolean
+function Agent:should_require_assistant_reasoning_content()
+  return self.api_format == "chat"
+    and self:has_capability("require_assistant_reasoning_content")
 end
 
 ---Return the provider request field used for output token limits.

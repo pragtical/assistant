@@ -474,6 +474,29 @@ local function add_tool_result(agent, conversation, call, result, status)
   })
 end
 
+---Return a provider-facing result for a denied tool call.
+---@param agent assistant.Agent
+---@param conversation assistant.Conversation|nil
+---@param call table
+---@return string
+local function denied_tool_result(agent, conversation, call)
+  local name = agent
+    and agent.resolve_tool_name
+    and agent:resolve_tool_name(call and call.name)
+    or call and call.name
+  local tool = agent and agent.tools and agent.tools[name or ""]
+  if tool and tool.denied_result then
+    local ok, result = pcall(tool.denied_result, call or {}, {
+      agent = agent,
+      conversation = conversation
+    })
+    if ok and type(result) == "string" and result ~= "" then
+      return result
+    end
+  end
+  return "user denied tool execution"
+end
+
 ---Compact completed fresh tool results after the model has consumed them.
 local function compact_deferred_tool_results(agent, conversation)
   if not (conversation and conversation.messages) then return end
@@ -2177,7 +2200,7 @@ function HttpBackend:resolve_tool_call(agent, conversation, request, decision, c
   local allowed = decision == "accept" or decision == "allow"
     or decision == "allow_session"
   if not allowed then
-    local result = "user denied tool execution"
+    local result = denied_tool_result(agent, conversation, call)
     conversation:set_status("tool denied", { autosave = false })
     add_tool_activity(agent, conversation, call, "denied", result)
     add_tool_result(agent, conversation, call, result, "error")

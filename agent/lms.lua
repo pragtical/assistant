@@ -29,7 +29,8 @@ function Lms:new(options)
     stream_responses = true,
     tool_calling = true,
     local_compact = true,
-    vision = true
+    vision = true,
+    require_assistant_reasoning_content = true
   }, options.capabilities)
   self.super.new(self, options)
 end

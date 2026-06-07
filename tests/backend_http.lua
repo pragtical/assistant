@@ -6,6 +6,7 @@ local http = require "core.http"
 local json = require "core.json"
 local common = require "core.common"
 local Conversation = require "plugins.assistant.conversation"
+local Agent = require "plugins.assistant.agent"
 local HttpBackend = require "plugins.assistant.backend.http"
 local Ollama = require "plugins.assistant.agent.ollama"
 local OpenAI = require "plugins.assistant.agent.openai"
@@ -667,6 +668,23 @@ test.describe("assistant http backend", function()
     test.equal(assistant_message.reasoning_content, "private chain")
   end)
 
+  test.it("replays empty reasoning_content for DeepSeek assistant messages without captured thinking", function()
+    local agent = DeepSeek()
+    local conversation = Conversation(agent, "project")
+    conversation:add("assistant", "answer", { autosave = false })
+
+    local payload = agent:build_payload(conversation)
+    local assistant_message
+    for _, message in ipairs(payload.messages or {}) do
+      if message.role == "assistant" and message.content == "answer" then
+        assistant_message = message
+      end
+    end
+
+    test.not_nil(assistant_message)
+    test.equal(assistant_message.reasoning_content, "")
+  end)
+
   test.it("does not replay stored reasoning_content for agents without opt-in", function()
     local agent = Ollama()
     local conversation = Conversation(agent, "project")
@@ -710,6 +728,42 @@ test.describe("assistant http backend", function()
 
     test.not_nil(assistant_message)
     test.equal(assistant_message.reasoning_content, "private chain")
+  end)
+
+  test.it("adds empty reasoning_content for OpenAI-compatible chat agents with provider requirement", function()
+    config.plugins.assistant.persist_reasoning_content = true
+    local agent = Ollama()
+    local conversation = Conversation(agent, "project")
+    conversation:add("assistant", "answer", { autosave = false })
+
+    local payload = agent:build_payload(conversation)
+    local assistant_message
+    for _, message in ipairs(payload.messages or {}) do
+      if message.role == "assistant" and message.content == "answer" then
+        assistant_message = message
+      end
+    end
+
+    test.not_nil(assistant_message)
+    test.equal(assistant_message.reasoning_content, "")
+  end)
+
+  test.it("does not add empty reasoning_content for agents without provider requirement", function()
+    config.plugins.assistant.persist_reasoning_content = true
+    local agent = Agent()
+    local conversation = Conversation(agent, "project")
+    conversation:add("assistant", "answer", { autosave = false })
+
+    local payload = agent:build_payload(conversation)
+    local assistant_message
+    for _, message in ipairs(payload.messages or {}) do
+      if message.role == "assistant" and message.content == "answer" then
+        assistant_message = message
+      end
+    end
+
+    test.not_nil(assistant_message)
+    test.equal(assistant_message.reasoning_content, nil)
   end)
 
   test.it("returns streamed reasoning_content metadata for explicit DeepSeek reasoning", function()
@@ -773,6 +827,40 @@ test.describe("assistant http backend", function()
     test.not_nil(provider_message)
     test.equal(provider_message.role, "assistant")
     test.equal(provider_message.reasoning_content, "private chain")
+  end)
+
+  test.it("replays empty reasoning_content on DeepSeek tool calls without captured thinking", function()
+    local agent = DeepSeek()
+    local call = {
+      id = "call_1",
+      name = "read",
+      arguments = { path = "init.lua" },
+      arguments_text = '{"path":"init.lua"}'
+    }
+    local conversation = Conversation(agent, "project")
+    conversation:add("tool_call", "read", {
+      autosave = false,
+      meta = {
+        provider_message = agent:tool_call_provider_message({ call })
+      }
+    })
+    conversation:add("tool_result", "done", {
+      autosave = false,
+      meta = {
+        provider_message = agent:tool_result_provider_message(call, "done")
+      }
+    })
+
+    local payload = agent:build_payload(conversation)
+    local tool_call_message
+    for _, message in ipairs(payload.messages or {}) do
+      if message.role == "assistant" and type(message.tool_calls) == "table" then
+        tool_call_message = message
+      end
+    end
+
+    test.not_nil(tool_call_message)
+    test.equal(tool_call_message.reasoning_content, "")
   end)
 
   test.it("hides streamed chat reasoning activity when disabled", function()
@@ -2757,6 +2845,120 @@ test.describe("assistant http backend", function()
     test.equal(executed, false)
     test.equal(response, "denied noted")
     test.equal(conversation.messages[#conversation.messages].message:find("user denied", 1, true) ~= nil, true)
+  end)
+
+  local function denied_tool_result_for(tool_name, args, registration)
+    local restore_background_threads = run_background_threads_immediately()
+    local old_post = http.post
+    local calls = 0
+    local second_body
+    local encoded_args = json.encode(args or {})
+    http.post = function(_, _, _, options)
+      calls = calls + 1
+      if calls == 1 then
+        options.on_done(true, nil, {
+          choices = {
+            {
+              message = {
+                tool_calls = {
+                  {
+                    id = "call_1",
+                    type = "function",
+                    ["function"] = {
+                      name = tool_name,
+                      arguments = encoded_args
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }, { status = 200 })
+      else
+        second_body = json.decode(options.body)
+        options.on_done(true, nil, {
+          choices = {
+            { message = { content = "denied noted" } }
+          }
+        }, { status = 200 })
+      end
+    end
+
+    local agent_options = { stream = false }
+    if registration == true and tool_name == "apply_patch" then
+      agent_options.model = "gpt-test"
+    end
+    local agent = Ollama(agent_options)
+    if registration == true then
+      tools.register_agent_tools(agent)
+    else
+      agent:register_tool(tool_name, registration or {
+        callback = function()
+          return "executed"
+        end,
+        params = {
+          { name = "path", type = "string" },
+          { name = "content", type = "string" }
+        }
+      })
+    end
+    local conversation = Conversation(agent, "project")
+    local backend = HttpBackend()
+
+    backend:send(agent, conversation, function(ok, _, _, meta)
+      if ok and meta and meta.event == "tool_call_request" then
+        backend:resolve_tool_call(agent, conversation, meta.request, "deny", function() end)
+      end
+    end)
+
+    http.post = old_post
+    restore_background_threads()
+    local tool_result = second_body.messages[#second_body.messages]
+    return tool_result.content
+  end
+
+  test.it("nudges models away from shell file writes after rejected mutation calls", function()
+    local write = denied_tool_result_for("write", {
+      path = "README.md",
+      content = "new"
+    }, true)
+    local edit = denied_tool_result_for("edit", {
+      path = "README.md",
+      edits = {
+        { oldText = "old", newText = "new" }
+      }
+    }, true)
+    local patch = denied_tool_result_for("apply_patch", {
+      patch = "*** Begin Patch\n*** Add File: README.md\n+new\n*** End Patch"
+    }, true)
+
+    for _, content in ipairs({ write, edit, patch }) do
+      test.equal(content:find("user denied tool execution", 1, true) ~= nil, true)
+      test.equal(content:find("Do not retry this file change through exec_command", 1, true) ~= nil, true)
+      test.equal(content:find("heredoc", 1, true) ~= nil, true)
+    end
+  end)
+
+  test.it("uses custom denied_result hooks and falls back when empty", function()
+    local custom = denied_tool_result_for("custom", {}, {
+      callback = function()
+        return "executed"
+      end,
+      denied_result = function()
+        return "custom denial"
+      end
+    })
+    local fallback = denied_tool_result_for("fallback", {}, {
+      callback = function()
+        return "executed"
+      end,
+      denied_result = function()
+        return nil
+      end
+    })
+
+    test.equal(custom:find("custom denial", 1, true) ~= nil, true)
+    test.equal(fallback:find("user denied tool execution", 1, true) ~= nil, true)
   end)
 
   test.it("resumes rejected tool calls on a background thread", function()

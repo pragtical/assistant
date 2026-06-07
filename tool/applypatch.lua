@@ -10,6 +10,19 @@ local Tool = require "plugins.assistant.tool"
 ---@class assistant.tool.applypatch
 local applypatch = {}
 
+---Return a provider-facing denial result for apply_patch.
+---@return string
+local function apply_patch_denied_result()
+  return table.concat({
+    "user denied tool execution",
+    "",
+    "Do not retry this file change through exec_command, shell redirection,",
+    "heredoc, tee, cat, or another shell-based file write. Ask the user how",
+    "to proceed, or use the approved file editing tool only if permission is",
+    "granted."
+  }, "\n")
+end
+
 ---Return the first path mentioned by a patch.
 ---@param patch string
 ---@return string
@@ -889,6 +902,7 @@ applypatch.tools = {
     callback = applypatch.apply_patch,
     result_is_successful = applypatch.result_is_successful,
     compact_history = applypatch.compact_history,
+    denied_result = apply_patch_denied_result,
     activity_label = function() return "Editing files" end,
     activity_markdown = apply_patch_activity,
     compact_activity_markdown = compact_apply_patch_activity,

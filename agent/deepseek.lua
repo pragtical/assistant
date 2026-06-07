@@ -105,7 +105,8 @@ function DeepSeek:new(options)
     tool_calling = true,
     local_compact = true,
     vision = false,
-    keep_reasoning_content = false
+    keep_reasoning_content = false,
+    require_assistant_reasoning_content = true
   }, options.capabilities)
   self.super.new(self, options)
   self.default_reasoning_effort = options.default_reasoning_effort
