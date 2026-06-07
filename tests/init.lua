@@ -338,6 +338,55 @@ test.describe("assistant plugin init", function()
     test.equal(started_agent, "openai")
   end)
 
+  test.it("populates resume conversation picker from indexed conversations", function()
+    local conversation = Conversation(Ollama(), root)
+    conversation.title = "Resume Me"
+    conversation:add("user", "hello")
+    conversation:save()
+    local entered_label
+    local entered_options
+    core.command_view.enter = function(_, label, options)
+      entered_label = label
+      entered_options = options
+    end
+
+    command.perform("assistant:resume-conversation")
+
+    test.equal(entered_label, "Assistant Session")
+    test.not_nil(entered_options)
+    test.equal(entered_options.show_suggestions, true)
+    test.equal(entered_options.typeahead, true)
+    local suggestions = entered_options.suggest("")
+    test.equal(#suggestions, 1)
+    test.equal(suggestions[1].id, conversation.id)
+    test.equal(suggestions[1].text:find("Resume Me", 1, true) ~= nil, true)
+    test.equal(entered_options.validate(conversation.id), true)
+  end)
+
+  test.it("resumes the selected conversation from the picker", function()
+    local conversation = Conversation(Ollama(), root)
+    conversation.title = "Pick Me"
+    conversation:add("user", "hello")
+    conversation:save()
+    local resumed_id
+    local resumed_project_dir
+    local old_resume = assistant.resume_conversation
+    assistant.resume_conversation = function(id, project_dir)
+      resumed_id = id
+      resumed_project_dir = project_dir
+    end
+    core.command_view.enter = function(_, _, options)
+      local selected = options.suggest("Pick")[1]
+      options.submit(selected.text, selected)
+    end
+
+    command.perform("assistant:resume-conversation")
+
+    assistant.resume_conversation = old_resume
+    test.equal(resumed_id, conversation.id)
+    test.equal(resumed_project_dir, root)
+  end)
+
   test.it("registers external tools for new assistant agents", function()
     local ok = assistant.register_tool("external_test_tool", {
       description = "External test tool.",

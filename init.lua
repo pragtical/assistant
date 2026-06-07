@@ -576,6 +576,86 @@ function assistant.select_agent_new_conversation()
   })
 end
 
+local function conversation_suggestion_text(item)
+  local title = tostring(item.title or item.name or item.preview or "Assistant Session")
+  local updated = tostring(item.updated_at or item.created_at or "")
+  if updated ~= "" then
+    return title .. " - " .. updated
+  end
+  return title
+end
+
+local function conversation_suggestion_info(item)
+  local parts = {}
+  if item.agent and item.agent ~= "" then table.insert(parts, item.agent) end
+  if item.model and item.model ~= "" then table.insert(parts, item.model) end
+  if item.id and item.id ~= "" then table.insert(parts, item.id) end
+  return table.concat(parts, "  ")
+end
+
+local function conversation_picker_items(project_dir)
+  local suggestions = {}
+  local captions = {}
+  local by_text = {}
+  local by_id = {}
+  for index, item in ipairs(Conversation.list(project_dir)) do
+    local text = conversation_suggestion_text(item)
+    if by_text[text] then
+      text = text .. " - " .. tostring(item.id or index)
+    end
+    local suggestion = {
+      text = text,
+      info = conversation_suggestion_info(item),
+      id = item.id,
+      item = item
+    }
+    table.insert(suggestions, suggestion)
+    table.insert(captions, text)
+    by_text[text] = suggestion
+    if item.id and item.id ~= "" then by_id[tostring(item.id)] = suggestion end
+  end
+  return suggestions, captions, by_text, by_id
+end
+
+---Prompt for a saved assistant conversation and resume it.
+---@param project_dir string?
+function assistant.select_resume_conversation(project_dir)
+  project_dir = project_dir or core.root_project().path
+  local suggestions, captions, by_text, by_id = conversation_picker_items(project_dir)
+  if #suggestions == 0 then
+    core.warn("Assistant: no saved conversations for %s", project_dir)
+    return
+  end
+
+  local function matching_suggestion(text, suggestion)
+    text = tostring(text or "")
+    return suggestion or by_id[text] or by_text[text]
+  end
+
+  core.command_view:enter("Assistant Session", {
+    show_suggestions = true,
+    typeahead = true,
+    suggest = function(text)
+      text = tostring(text or "")
+      if text == "" then return suggestions end
+      local result = {}
+      for _, caption in ipairs(common.fuzzy_match(captions, text, true)) do
+        table.insert(result, by_text[caption])
+      end
+      return result
+    end,
+    validate = function(text, suggestion)
+      return matching_suggestion(text, suggestion) ~= nil
+    end,
+    submit = function(text, suggestion)
+      local selected = matching_suggestion(text, suggestion)
+      if selected then
+        assistant.resume_conversation(selected.id, project_dir)
+      end
+    end
+  })
+end
+
 ---Open a saved assistant conversation.
 ---@param id string
 ---@param project_dir string?
@@ -762,11 +842,7 @@ command.add(nil, {
   end,
 
   ["assistant:resume-conversation"] = function()
-    core.command_view:enter("Assistant Session ID", {
-      submit = function(id)
-        assistant.resume_conversation(id)
-      end
-    })
+    assistant.select_resume_conversation()
   end,
 
   ["assistant:delete-conversation"] = function()

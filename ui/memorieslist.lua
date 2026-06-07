@@ -98,6 +98,9 @@ local MemoryEditor = Widget:extend()
 ---@param on_save fun(item: table)|nil
 function MemoryEditor:new(project_dir, item, on_save)
   MemoryEditor.super.new(self)
+  if item and item.id and item.content == nil then
+    item = Conversation.load_memory(project_dir, item.id) or item
+  end
   self.defer_draw = false
   self.border.width = 0
   self.project_dir = project_dir
@@ -393,7 +396,7 @@ function MemoriesList:add_memory(item)
     ListBox.COLEND,
     style.dim, item.id or "",
     ListBox.COLEND,
-    style.syntax.comment, truncate(item.content or "", 60)
+    style.syntax.comment, truncate(item.preview or item.content or "", 60)
   }, item)
 end
 
@@ -404,7 +407,7 @@ function MemoriesList:refresh()
   self.list.rows_original = {}
   self.list.row_data_original = {}
   self.list.rows_idx_original = {}
-  for _, item in ipairs(Conversation.list_memories(self.project_dir)) do
+  for _, item in ipairs(Conversation.list_memories(self.project_dir, { metadata_only = true })) do
     self:add_memory(item)
   end
   self.list:resize_to_parent()

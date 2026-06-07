@@ -19,6 +19,13 @@ local function write(path, text)
   fp:close()
 end
 
+local function write_table(path, value)
+  write(path, "return " .. common.serialize(value, {
+    pretty = true,
+    sort = true
+  }))
+end
+
 test.describe("assistant conversation", function()
   local old_log_raw_messages
   local old_verbose_tool_calling
@@ -78,6 +85,51 @@ test.describe("assistant conversation", function()
     test.equal(memories[1].id, item.id)
     test.equal(memories[1].title, "New Rule")
     test.equal(memories[1].content, "Prefer focused patches.")
+  end)
+
+  test.it("maintains a metadata index for memories", function()
+    local item = Conversation.add_memory(root, "Indexed Rule", "Prefer indexed list reads.")
+    local index = assert(loadfile(Conversation.memories_index_path(root), "t", {}))()
+
+    test.equal(index.version, 1)
+    test.equal(#index.items, 1)
+    test.equal(index.items[1].id, item.id)
+    test.equal(index.items[1].title, "Indexed Rule")
+    test.equal(index.items[1].preview, "Prefer indexed list reads.")
+    test.equal(index.items[1].content, nil)
+
+    local updated = Conversation.update_memory(root, item.id, "Indexed Rule Updated", "Updated content.")
+    local metadata = Conversation.list_memories(root, { metadata_only = true })
+    local full = Conversation.list_memories(root)
+
+    test.equal(updated.id, item.id)
+    test.equal(metadata[1].title, "Indexed Rule Updated")
+    test.equal(metadata[1].preview, "Updated content.")
+    test.equal(metadata[1].content, nil)
+    test.equal(full[1].content, "Updated content.")
+
+    test.equal(Conversation.delete_memory(root, item.id), true)
+    metadata = Conversation.list_memories(root, { metadata_only = true })
+    test.equal(#metadata, 0)
+  end)
+
+  test.it("rebuilds a stale memories index from memory files", function()
+    local first = Conversation.add_memory(root, "First", "one")
+    local second = {
+      id = "manual-memory",
+      title = "Manual",
+      content = "two",
+      created_at = "2099-01-01T00:00:00Z",
+      updated_at = "2099-01-01T00:00:00Z"
+    }
+    write_table(Conversation.memory_path(root, second.id), second)
+
+    local metadata = Conversation.list_memories(root, { metadata_only = true })
+
+    test.equal(#metadata, 2)
+    test.equal(metadata[1].id, second.id)
+    test.equal(metadata[1].preview, "two")
+    test.equal(metadata[2].id, first.id)
   end)
 
   test.it("sends hidden environment context to providers before user prompts", function()
@@ -160,10 +212,17 @@ test.describe("assistant conversation", function()
     test.equal(conversation:save(), true)
     test.equal(system.get_file_info(Conversation.session_path(root, conversation.id)) ~= nil, true)
     test.equal(Conversation.session_path(root, conversation.id):match("%.lua$") ~= nil, true)
+    local index = assert(loadfile(Conversation.conversations_index_path(root), "t", {}))()
+    test.equal(index.version, 1)
+    test.equal(#index.items, 1)
+    test.equal(index.items[1].id, conversation.id)
+    test.equal(index.items[1].title, "Saved Session")
+    test.equal(index.items[1].messages, nil)
 
     local list = Conversation.list(root)
     test.equal(#list, 1)
     test.equal(list[1].title, "Saved Session")
+    test.equal(list[1].messages, nil)
 
     local loaded = Conversation.load(conversation.id, root)
     test.not_nil(loaded)
@@ -183,6 +242,35 @@ test.describe("assistant conversation", function()
 
     test.equal(Conversation.delete(conversation.id, root), true)
     test.equal(#Conversation.list(root), 0)
+    index = assert(loadfile(Conversation.conversations_index_path(root), "t", {}))()
+    test.equal(#index.items, 0)
+  end)
+
+  test.it("rebuilds a stale conversations index from session files", function()
+    local conversation = Conversation(Ollama(), root)
+    conversation.title = "First"
+    conversation:save()
+    local second = {
+      version = 1,
+      id = "manual-session",
+      title = "Manual",
+      project_dir = root,
+      agent = "ollama",
+      backend = "http",
+      model = "manual-model",
+      messages = {},
+      created_at = "2099-01-01T00:00:00Z",
+      updated_at = "2099-01-01T00:00:00Z"
+    }
+    write_table(Conversation.session_path(root, second.id), second)
+
+    local list = Conversation.list(root)
+
+    test.equal(#list, 2)
+    test.equal(list[1].id, second.id)
+    test.equal(list[1].title, "Manual")
+    test.equal(list[1].messages, nil)
+    test.equal(list[2].id, conversation.id)
   end)
 
   test.it("stores raw responses beside the session", function()

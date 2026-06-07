@@ -13,6 +13,12 @@ local function mkdirp(path)
   common.mkdirp(path)
 end
 
+local function write(path, text)
+  local fp = assert(io.open(path, "wb"))
+  fp:write(text)
+  fp:close()
+end
+
 test.describe("assistant conversations list", function()
   test.before_each(function()
     common.rm(root, true)
@@ -41,6 +47,20 @@ test.describe("assistant conversations list", function()
 
     test.equal(view.list.rows[1][2], "This is a very long convers...")
     test.equal(view.list:get_row_data(1).title, conversation.title)
+  end)
+
+  test.it("renders saved conversations from index metadata", function()
+    local conversation = Conversation(Ollama(), root)
+    conversation.title = "Indexed Conversation"
+    conversation:add("user", "hello")
+    conversation:save()
+    write(Conversation.session_path(root, conversation.id), "this is not loadable lua")
+
+    local view = ConversationsList(root)
+
+    test.equal(#view.list.rows, 1)
+    test.equal(view.list:get_row_data(1).id, conversation.id)
+    test.equal(view.list:get_row_data(1).title, "Indexed Conversation")
   end)
 
   test.it("can delete the selected conversation", function()

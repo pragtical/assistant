@@ -41,6 +41,9 @@ local FILE_CHUNK_SIZE = 64 * 1024
 Conversation.SESSION_SUBDIR = ".pragtical" .. PATHSEP .. "assistant" .. PATHSEP .. "sessions"
 Conversation.MEMORY_SUBDIR = ".pragtical" .. PATHSEP .. "assistant" .. PATHSEP .. "memories"
 Conversation.LOG_SUBDIR = ".pragtical" .. PATHSEP .. "assistant" .. PATHSEP .. "logs"
+Conversation.ASSISTANT_SUBDIR = ".pragtical" .. PATHSEP .. "assistant"
+Conversation.CONVERSATIONS_INDEX = "conversations_index.lua"
+Conversation.MEMORIES_INDEX = "memories_index.lua"
 
 local VALID_ROLES = {
   system = true,
@@ -361,6 +364,13 @@ function Conversation.sessions_dir(project_dir)
   return project_dir_or_default(project_dir) .. PATHSEP .. Conversation.SESSION_SUBDIR
 end
 
+---Handle assistant dir.
+---@param project_dir string|nil
+---@return string
+function Conversation.assistant_dir(project_dir)
+  return project_dir_or_default(project_dir) .. PATHSEP .. Conversation.ASSISTANT_SUBDIR
+end
+
 ---Handle memories dir.
 ---@param project_dir string|nil
 ---@return string
@@ -407,6 +417,194 @@ function Conversation.memory_path(project_dir, id)
   return Conversation.memories_dir(project_dir) .. PATHSEP .. assert(sanitize_id(id), "invalid memory id") .. ".lua"
 end
 
+---Handle conversations index path.
+---@param project_dir string|nil
+---@return string
+function Conversation.conversations_index_path(project_dir)
+  return Conversation.assistant_dir(project_dir) .. PATHSEP .. Conversation.CONVERSATIONS_INDEX
+end
+
+---Handle memories index path.
+---@param project_dir string|nil
+---@return string
+function Conversation.memories_index_path(project_dir)
+  return Conversation.assistant_dir(project_dir) .. PATHSEP .. Conversation.MEMORIES_INDEX
+end
+
+---Return item ids for lua files in a persistence directory.
+---@param dir string
+---@return table<string, boolean> ids
+---@return integer count
+local function lua_file_ids(dir)
+  local ids = {}
+  local count = 0
+  for _, filename in ipairs(system.list_dir(dir) or {}) do
+    local id = filename:match("^(.*)%.lua$")
+    if id then
+      ids[id] = true
+      count = count + 1
+    end
+  end
+  return ids, count
+end
+
+---Return whether an index has exactly the same ids as the item files.
+---@param index table|nil
+---@param dir string
+---@return boolean valid
+local function index_matches_files(index, dir)
+  if type(index) ~= "table" or index.version ~= 1 or type(index.items) ~= "table" then
+    return false
+  end
+  local file_ids, file_count = lua_file_ids(dir)
+  local index_ids = {}
+  local index_count = 0
+  for _, item in ipairs(index.items) do
+    local id = type(item) == "table" and item.id and sanitize_id(item.id)
+    if not id or index_ids[id] or not file_ids[id] then return false end
+    index_ids[id] = true
+    index_count = index_count + 1
+  end
+  if index_count ~= file_count then return false end
+  for id in pairs(file_ids) do
+    if not index_ids[id] then return false end
+  end
+  return true
+end
+
+---Write an index file.
+---@param project_dir string
+---@param path string
+---@param items table[]
+---@return boolean
+local function write_index(project_dir, path, items)
+  if not mkdirp(Conversation.assistant_dir(project_dir)) then return false end
+  return write_table(path, {
+    version = 1,
+    updated_at = now(),
+    items = items or {}
+  })
+end
+
+---Return list metadata for a saved conversation.
+---@param state table
+---@return table
+local function conversation_index_item(state)
+  return {
+    id = state.id,
+    title = state.title,
+    project_dir = state.project_dir,
+    agent = state.agent,
+    backend = state.backend,
+    model = state.model,
+    reasoning_effort = state.reasoning_effort,
+    collaboration_mode = state.collaboration_mode,
+    created_at = state.created_at,
+    updated_at = state.updated_at,
+    codex_thread_id = state.codex_thread_id,
+    acp_session_id = state.acp_session_id
+  }
+end
+
+---Return list metadata for a saved memory.
+---@param item table
+---@return table
+local function memory_index_item(item)
+  local content = tostring(item.content or "")
+  return {
+    id = item.id,
+    title = item.title,
+    preview = content:sub(1, 200),
+    created_at = item.created_at,
+    updated_at = item.updated_at,
+    meta = item.meta
+  }
+end
+
+---Sort conversation index items newest first.
+---@param items table[]
+local function sort_conversation_items(items)
+  table.sort(items, function(a, b)
+    return tostring(a.updated_at or "") > tostring(b.updated_at or "")
+  end)
+end
+
+---Sort memory index items newest first.
+---@param items table[]
+local function sort_memory_items(items)
+  table.sort(items, function(a, b)
+    return tostring(a.updated_at or a.created_at or "") > tostring(b.updated_at or b.created_at or "")
+  end)
+end
+
+---Upsert one index item.
+---@param project_dir string
+---@param index_path string
+---@param item table
+---@param sorter fun(items: table[])
+---@return boolean
+local function upsert_index_item(project_dir, index_path, item, sorter)
+  local index = load_table(index_path)
+  local items = type(index) == "table" and type(index.items) == "table" and index.items or {}
+  local id = item and item.id and sanitize_id(item.id)
+  if not id then return false end
+  local replaced = false
+  for index_item, existing in ipairs(items) do
+    local existing_id = existing and existing.id
+    if existing_id and sanitize_id(existing_id) == id then
+      items[index_item] = item
+      replaced = true
+      break
+    end
+  end
+  if not replaced then table.insert(items, item) end
+  sorter(items)
+  return write_index(project_dir, index_path, items)
+end
+
+---Remove one index item.
+---@param project_dir string
+---@param index_path string
+---@param id string
+---@param sorter fun(items: table[])
+---@return boolean
+local function remove_index_item(project_dir, index_path, id, sorter)
+  local index = load_table(index_path)
+  local items = type(index) == "table" and type(index.items) == "table" and index.items or {}
+  id = id and sanitize_id(id)
+  if not id then return false end
+  for item_index = #items, 1, -1 do
+    local existing_id = items[item_index] and items[item_index].id
+    if existing_id and sanitize_id(existing_id) == id then
+      table.remove(items, item_index)
+    end
+  end
+  sorter(items)
+  return write_index(project_dir, index_path, items)
+end
+
+---Rebuild an index by loading all item files in a directory.
+---@param project_dir string
+---@param item_dir string
+---@param index_path string
+---@param mapper fun(item: table): table
+---@param sorter fun(items: table[])
+---@return table[] items
+local function rebuild_index(project_dir, item_dir, index_path, mapper, sorter)
+  local items = {}
+  for _, filename in ipairs(system.list_dir(item_dir) or {}) do
+    if filename:match("%.lua$") then
+      local decoded = load_table(item_dir .. PATHSEP .. filename)
+      if type(decoded) == "table" then
+        table.insert(items, mapper(decoded))
+      end
+    end
+  end
+  sorter(items)
+  write_index(project_dir, index_path, items)
+  return items
+end
+
 ---Read project instructions.
 ---@param project_dir string|nil
 ---@return string|nil
@@ -414,11 +612,32 @@ function Conversation.read_project_instructions(project_dir)
   return read_file(project_dir_or_default(project_dir) .. PATHSEP .. "AGENTS.md")
 end
 
+---Load memory.
+---@param project_dir string|nil
+---@param id string
+---@return table|nil memory
+function Conversation.load_memory(project_dir, id)
+  id = id and sanitize_id(id)
+  if not id then return nil end
+  local decoded = load_table(Conversation.memory_path(project_dir, id))
+  if type(decoded) ~= "table" then return nil end
+  decoded.id = decoded.id or id
+  return decoded
+end
+
 ---List memories.
 ---@param project_dir string|nil
+---@param options table|nil
 ---@return table[] memories
-function Conversation.list_memories(project_dir)
+function Conversation.list_memories(project_dir, options)
+  project_dir = project_dir_or_default(project_dir)
   local dir = Conversation.memories_dir(project_dir)
+  local index_path = Conversation.memories_index_path(project_dir)
+  if options and options.metadata_only then
+    local index = load_table(index_path)
+    if index_matches_files(index, dir) then return index.items end
+    return rebuild_index(project_dir, dir, index_path, memory_index_item, sort_memory_items)
+  end
   local result = {}
   for _, filename in ipairs(system.list_dir(dir) or {}) do
     if filename:match("%.lua$") then
@@ -450,6 +669,14 @@ function Conversation.add_memory(project_dir, title, content)
     updated_at = now()
   }
   local ok = write_table(Conversation.memory_path(project_dir, item.id), item)
+  if ok then
+    upsert_index_item(
+      project_dir,
+      Conversation.memories_index_path(project_dir),
+      memory_index_item(item),
+      sort_memory_items
+    )
+  end
   return ok and item or nil
 end
 
@@ -507,6 +734,12 @@ function Conversation:store_local_compaction_memory()
     memory.meta.local_compaction = true
     memory.meta.local_compaction_trigger = self.local_compaction.trigger or "manual"
     write_table(Conversation.memory_path(self.project_dir, memory.id), memory)
+    upsert_index_item(
+      self.project_dir,
+      Conversation.memories_index_path(self.project_dir),
+      memory_index_item(memory),
+      sort_memory_items
+    )
     self.local_compaction.memory_id = memory.id
     self.memories = Conversation.list_memories(self.project_dir)
   end
@@ -532,6 +765,14 @@ function Conversation.update_memory(project_dir, id, title, content)
   decoded.created_at = decoded.created_at or now()
   decoded.updated_at = now()
   local ok = write_table(path, decoded)
+  if ok then
+    upsert_index_item(
+      project_dir,
+      Conversation.memories_index_path(project_dir),
+      memory_index_item(decoded),
+      sort_memory_items
+    )
+  end
   return ok and decoded or nil
 end
 
@@ -540,9 +781,11 @@ end
 ---@param id string
 ---@return boolean
 function Conversation.delete_memory(project_dir, id)
+  project_dir = project_dir_or_default(project_dir)
   local path = Conversation.memory_path(project_dir, id)
   if system.get_file_info(path) then
     os.remove(path)
+    remove_index_item(project_dir, Conversation.memories_index_path(project_dir), id, sort_memory_items)
     return true
   end
   return false
@@ -1214,7 +1457,17 @@ function Conversation:save()
   if not self.project_dir then return false end
   if not mkdirp(Conversation.sessions_dir(self.project_dir)) then return false end
   local path = Conversation.session_path(self.project_dir, self.id)
-  return write_table(path, self:to_state())
+  local state = self:to_state()
+  local ok = write_table(path, state)
+  if ok then
+    upsert_index_item(
+      self.project_dir,
+      Conversation.conversations_index_path(self.project_dir),
+      conversation_index_item(state),
+      sort_conversation_items
+    )
+  end
+  return ok
 end
 
 ---Append raw response.
@@ -1287,20 +1540,12 @@ end
 ---@param project_dir string|nil
 ---@return table[] sessions
 function Conversation.list(project_dir)
+  project_dir = project_dir_or_default(project_dir)
   local dir = Conversation.sessions_dir(project_dir)
-  local result = {}
-  for _, filename in ipairs(system.list_dir(dir) or {}) do
-    if filename:match("%.lua$") then
-      local decoded = load_table(dir .. PATHSEP .. filename)
-      if type(decoded) == "table" then
-        table.insert(result, decoded)
-      end
-    end
-  end
-  table.sort(result, function(a, b)
-    return tostring(a.updated_at or "") > tostring(b.updated_at or "")
-  end)
-  return result
+  local index_path = Conversation.conversations_index_path(project_dir)
+  local index = load_table(index_path)
+  if index_matches_files(index, dir) then return index.items end
+  return rebuild_index(project_dir, dir, index_path, conversation_index_item, sort_conversation_items)
 end
 
 ---Delete delete.
@@ -1308,6 +1553,7 @@ end
 ---@param project_dir string|nil
 ---@return boolean
 function Conversation.delete(id, project_dir)
+  project_dir = project_dir_or_default(project_dir)
   local path = Conversation.session_path(project_dir, id)
   if system.get_file_info(path) then
     os.remove(path)
@@ -1315,6 +1561,7 @@ function Conversation.delete(id, project_dir)
     if system.get_file_info(raw_path) then
       os.remove(raw_path)
     end
+    remove_index_item(project_dir, Conversation.conversations_index_path(project_dir), id, sort_conversation_items)
     return true
   end
   return false

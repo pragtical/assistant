@@ -42,6 +42,7 @@ test.describe("assistant memories list", function()
     test.equal(view.list.rows[1][2], "This is a very long memory...")
     test.equal(view.list.rows[1][11], "This is a long memory body that should be compacted for t...")
     test.equal(view.list:get_row_data(1).title, title)
+    test.equal(view.list:get_row_data(1).content, nil)
   end)
 
   test.it("can delete the selected memory", function()
@@ -108,6 +109,20 @@ test.describe("assistant memories list", function()
     test.equal(saved.id, item.id)
     test.equal(listed[1].title, "New")
     test.equal(listed[1].content, "new content")
+  end)
+
+  test.it("loads full memory content when opening indexed row data", function()
+    local item = Conversation.add_memory(root, "Indexed", "full content")
+    local view = MemoriesList(root)
+    local data = view.list:get_row_data(1)
+
+    test.equal(data.id, item.id)
+    test.equal(data.content, nil)
+
+    local editor = MemoriesList.MemoryEditor(root, data)
+
+    test.equal(editor.item.id, item.id)
+    test.equal(editor:get_content(), "full content")
   end)
 
   test.it("reports the parent editor title from the embedded docview", function()
