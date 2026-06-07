@@ -235,6 +235,42 @@ function ConversationsList:confirm_delete_selected()
   )
 end
 
+---Delete every saved conversation for this project and refresh the list.
+---@return integer deleted
+function ConversationsList:delete_all_conversations()
+  local deleted = 0
+  for _, item in ipairs(Conversation.list(self.project_dir)) do
+    if item.id and Conversation.delete(item.id, self.project_dir) then
+      deleted = deleted + 1
+    end
+  end
+  self:refresh()
+  return deleted
+end
+
+---Confirm deletion of every saved conversation.
+function ConversationsList:confirm_delete_all()
+  local count = #Conversation.list(self.project_dir)
+  if count == 0 then return end
+  MessageBox.warning(
+    "Assistant Delete All Conversations",
+    {
+      "Do you really want to delete all saved conversations?",
+      Widget.NEWLINE,
+      Widget.NEWLINE,
+      "Count: " .. count,
+      Widget.NEWLINE,
+      "Project: " .. self.project_dir
+    },
+    function(_, button_id)
+      if button_id == 1 then
+        self:delete_all_conversations()
+      end
+    end,
+    MessageBox.BUTTONS_YES_NO
+  )
+end
+
 ---Draw the view contents.
 function ConversationsList:draw()
   if ConversationsList.super.draw(self) then
@@ -276,6 +312,9 @@ end, {
   ["assistant-conversations:delete"] = function(view)
     view:confirm_delete_selected()
   end,
+  ["assistant-conversations:delete-all"] = function(view)
+    view:confirm_delete_all()
+  end,
   ["assistant-conversations:refresh"] = function(view)
     view:refresh()
   end
@@ -298,7 +337,9 @@ ConversationsList.menu:register(
     return core.active_view
       and core.active_view:is(ConversationsList)
   end, {
-    { text = "Refresh", command = "assistant-conversations:refresh" }
+    { text = "Refresh", command = "assistant-conversations:refresh" },
+    ContextMenu.DIVIDER,
+    { text = "Delete All", command = "assistant-conversations:delete-all" }
   }
 )
 

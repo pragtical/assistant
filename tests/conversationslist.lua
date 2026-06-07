@@ -77,4 +77,24 @@ test.describe("assistant conversations list", function()
 
     test.equal(#view.list.rows, 0)
   end)
+
+  test.it("can delete all saved conversations", function()
+    local first = Conversation(Ollama(), root)
+    first.title = "First"
+    first:add("user", "hello")
+    first:save()
+    local second = Conversation(Ollama(), root)
+    second.title = "Second"
+    second:add("user", "hello")
+    second:save()
+
+    local view = ConversationsList(root)
+    local deleted = view:delete_all_conversations()
+
+    test.equal(deleted, 2)
+    test.equal(#view.list.rows, 0)
+    test.equal(#Conversation.list(root), 0)
+    test.equal(system.get_file_info(Conversation.session_path(root, first.id)), nil)
+    test.equal(system.get_file_info(Conversation.session_path(root, second.id)), nil)
+  end)
 end)

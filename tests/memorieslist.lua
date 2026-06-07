@@ -57,6 +57,20 @@ test.describe("assistant memories list", function()
     test.equal(#view.list.rows, 0)
   end)
 
+  test.it("can delete all saved memories", function()
+    local first = Conversation.add_memory(root, "First", "one")
+    local second = Conversation.add_memory(root, "Second", "two")
+
+    local view = MemoriesList(root)
+    local deleted = view:delete_all_memories()
+
+    test.equal(deleted, 2)
+    test.equal(#view.list.rows, 0)
+    test.equal(#Conversation.list_memories(root), 0)
+    test.equal(system.get_file_info(Conversation.memory_path(root, first.id)), nil)
+    test.equal(system.get_file_info(Conversation.memory_path(root, second.id)), nil)
+  end)
+
   test.it("opens the selected memory through its callback", function()
     local item = Conversation.add_memory(root, "Open Me", "content")
     local opened

@@ -520,6 +520,42 @@ function MemoriesList:confirm_delete_selected()
   )
 end
 
+---Delete every saved memory for this project and refresh the list.
+---@return integer deleted
+function MemoriesList:delete_all_memories()
+  local deleted = 0
+  for _, item in ipairs(Conversation.list_memories(self.project_dir, { metadata_only = true })) do
+    if item.id and Conversation.delete_memory(self.project_dir, item.id) then
+      deleted = deleted + 1
+    end
+  end
+  self:refresh()
+  return deleted
+end
+
+---Confirm deletion of every saved memory.
+function MemoriesList:confirm_delete_all()
+  local count = #Conversation.list_memories(self.project_dir, { metadata_only = true })
+  if count == 0 then return end
+  MessageBox.warning(
+    "Assistant Delete All Memories",
+    {
+      "Do you really want to delete all saved memories?",
+      Widget.NEWLINE,
+      Widget.NEWLINE,
+      "Count: " .. count,
+      Widget.NEWLINE,
+      "Project: " .. self.project_dir
+    },
+    function(_, button_id)
+      if button_id == 1 then
+        self:delete_all_memories()
+      end
+    end,
+    MessageBox.BUTTONS_YES_NO
+  )
+end
+
 ---Draw the view contents.
 function MemoriesList:draw()
   if MemoriesList.super.draw(self) then
@@ -561,6 +597,9 @@ end, {
   ["assistant-memories:delete"] = function(view)
     view:confirm_delete_selected()
   end,
+  ["assistant-memories:delete-all"] = function(view)
+    view:confirm_delete_all()
+  end,
   ["assistant-memories:add"] = function(view)
     view:add_new_memory()
   end,
@@ -587,7 +626,9 @@ MemoriesList.menu:register(
       and core.active_view:is(MemoriesList)
   end, {
     { text = "Add Memory", command = "assistant-memories:add" },
-    { text = "Refresh", command = "assistant-memories:refresh" }
+    { text = "Refresh", command = "assistant-memories:refresh" },
+    ContextMenu.DIVIDER,
+    { text = "Delete All", command = "assistant-memories:delete-all" }
   }
 )
 
