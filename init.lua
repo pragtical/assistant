@@ -71,7 +71,7 @@ config.plugins.assistant = common.merge({
   compact_tool_results = false,
   compact_tool_history = false,
   generate_conversation_titles = true,
-  stream = true,
+  stream = false,
   request_timeout_ms = 1800000,
   max_tool_call_rounds = 0,
   max_repeated_tool_calls = 4,
@@ -115,7 +115,7 @@ config.plugins.assistant = common.merge({
       description = "Use Server-Sent Events streaming when supported.",
       path = "stream",
       type = "toggle",
-      default = true
+      default = false
     },
     {
       label = "Allow Any Read Path",
