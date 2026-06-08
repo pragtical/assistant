@@ -945,6 +945,7 @@ command.add(PromptView.compact_predicate, {
 
 keymap.add {
   ["ctrl+alt+a"] = "assistant:new-conversation",
+  ["ctrl+shift+alt+a"] = "assistant:select-agent-new-conversation",
   ["ctrl+enter"] = "assistant-conversation:send",
   ["ctrl+return"] = "assistant-conversation:send",
   ["ctrl+m"] = "assistant-conversation:select-model",
