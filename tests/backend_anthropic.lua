@@ -31,7 +31,7 @@ test.describe("assistant Anthropic backend", function()
       .. "data: " .. json.encode(data) .. "\n\n"
   end
 
-  test.it("deduplicates repeated streamed text delta sequences", function()
+  test.it("preserves repeated streamed text delta sequences", function()
     local old_request = http.request
     http.request = function(_, _, options)
       options.on_header({ status = 200 })
@@ -86,7 +86,89 @@ test.describe("assistant Anthropic backend", function()
     end)
 
     http.request = old_request
-    test.equal(response, "220 passed, 3 failed. Let me see which tests failed\n\nThe failure is in folding.")
+    test.equal(
+      response,
+      "220 passed, 3 failed. Let me see which tests failed\n\n"
+        .. "220 passed, 3 failed. Let me see which tests failed\n\n"
+        .. "The failure is in folding."
+    )
+  end)
+
+  test.it("preserves repeated markdown table row prefixes in text deltas", function()
+    local old_request = http.request
+    http.request = function(_, _, options)
+      options.on_header({ status = 200 })
+      options.on_chunk(event("message_start", {
+        message = {
+          usage = {
+            input_tokens = 10,
+            output_tokens = 0
+          }
+        }
+      }))
+      options.on_chunk(event("content_block_start", {
+        index = 0,
+        content_block = {
+          type = "text",
+          text = ""
+        }
+      }))
+      local chunks = {
+        "Here you go.\n\n## Critical\n\n",
+        "| # | Issue | File |\n",
+        "|---|-------|------|\n",
+        "| **1** | Process tools | `tool/process.lua` |\n\n",
+        "## Important\n\n",
+        "| # | Issue | File |\n",
+        "|---|-------|------|\n",
+        "| **5** | Global capabilities | `agent_config.lua` |\n\n",
+        "## Polish\n\n",
+        "| # | Issue | File |\n",
+        "|---|-------|------|\n",
+        "| **9** | Default timeout | `init.lua:75` |\n",
+        "| **10** | Process sessions | `tool/process.lua` |\n",
+        "| **11** | JSON prefix | `jsonutil.lua` |\n",
+        "| **12** | Prompt view size | `promptview.lua` |\n",
+        "| **15** | Plan follow-up | `backend/http.lua` |"
+      }
+      for _, text in ipairs(chunks) do
+        options.on_chunk(event("content_block_delta", {
+          index = 0,
+          delta = {
+            type = "text_delta",
+            text = text
+          }
+        }))
+      end
+      options.on_chunk(event("content_block_stop", { index = 0 }))
+      options.on_chunk(event("message_delta", {
+        delta = { stop_reason = "end_turn" },
+        usage = {
+          input_tokens = 10,
+          output_tokens = 30
+        }
+      }))
+      options.on_chunk(event("message_stop", {}))
+      options.on_done(true, nil, nil, { status = 200 })
+    end
+
+    local agent = Anthropic({ stream = true })
+    local conversation = Conversation(agent, "project")
+    local backend = AnthropicBackend()
+    local response
+
+    backend:send(agent, conversation, function(ok, _, text, meta)
+      if ok and meta and meta.done then response = text end
+    end)
+
+    http.request = old_request
+    test.not_nil(response)
+    test.equal(response:find("| # | Issue | File |\n|---|-------|------|\n| **5** |", 1, true) ~= nil, true)
+    test.equal(response:find("| # | Issue | File |\n|---|-------|------|\n| **9** |", 1, true) ~= nil, true)
+    test.equal(response:find("\n| **10** |", 1, true) ~= nil, true)
+    test.equal(response:find("\n| **11** |", 1, true) ~= nil, true)
+    test.equal(response:find("\n| **12** |", 1, true) ~= nil, true)
+    test.equal(response:find("\n| **15** |", 1, true) ~= nil, true)
   end)
 
   test.it("reports malformed streamed tool arguments without executing", function()

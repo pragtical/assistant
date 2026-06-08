@@ -271,7 +271,7 @@ test.describe("assistant http backend", function()
     test.equal(response, "I see missing pieces. Let me fix it.")
   end)
 
-  test.it("deduplicates repeated streamed text delta sequences", function()
+  test.it("preserves repeated streamed text delta sequences", function()
     local old_request = http.request
     http.request = function(_, _, options)
       options.on_header({ status = 200 })
@@ -303,7 +303,12 @@ test.describe("assistant http backend", function()
     end)
 
     http.request = old_request
-    test.equal(response, "220 passed, 3 failed. Let me see which tests failed\n\nThe failure is in folding.")
+    test.equal(
+      response,
+      "220 passed, 3 failed. Let me see which tests failed\n\n"
+        .. "220 passed, 3 failed. Let me see which tests failed\n\n"
+        .. "The failure is in folding."
+    )
   end)
 
   test.it("generates conversation titles with a focused side request", function()
@@ -1034,6 +1039,64 @@ test.describe("assistant http backend", function()
     http.request = old_request
     test.equal(response, "hello")
     test.equal(usage.total_tokens, 7)
+  end)
+
+  test.it("preserves repeated markdown table row prefixes in sse chunks", function()
+    local old_request = http.request
+    http.request = function(_, _, options)
+      options.on_header({ status = 200 })
+      local chunks = {
+        "Here you go.\n\n## Critical\n\n",
+        "| # | Issue | File |\n",
+        "|---|-------|------|\n",
+        "| **1** | Process tools | `tool/process.lua` |\n\n",
+        "## Important\n\n",
+        "| # | Issue | File |\n",
+        "|---|-------|------|\n",
+        "| **5** | Global capabilities | `agent_config.lua` |\n\n",
+        "## Polish\n\n",
+        "| # | Issue | File |\n",
+        "|---|-------|------|\n",
+        "| **9** | Default timeout | `init.lua:75` |\n",
+        "| **10** | Process sessions | `tool/process.lua` |\n",
+        "| **11** | JSON prefix | `jsonutil.lua` |\n",
+        "| **12** | Prompt view size | `promptview.lua` |\n",
+        "| **15** | Plan follow-up | `backend/http.lua` |"
+      }
+      for _, chunk in ipairs(chunks) do
+        options.on_chunk("data: " .. json.encode({
+          choices = {
+            {
+              delta = { content = chunk },
+              finish_reason = nil
+            }
+          }
+        }) .. "\n\n")
+      end
+      options.on_chunk('data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n\n')
+      options.on_chunk('data: [DONE]\n\n')
+      options.on_done(true, nil, nil, { status = 200 })
+    end
+
+    local agent = Ollama({ stream = true })
+    local conversation = Conversation(agent, "project")
+    local backend = HttpBackend()
+    local response
+
+    backend:send(agent, conversation, function(ok, _, text, meta)
+      if ok and meta and meta.done then
+        response = text
+      end
+    end)
+
+    http.request = old_request
+    test.not_nil(response)
+    test.equal(response:find("| # | Issue | File |\n|---|-------|------|\n| **5** |", 1, true) ~= nil, true)
+    test.equal(response:find("| # | Issue | File |\n|---|-------|------|\n| **9** |", 1, true) ~= nil, true)
+    test.equal(response:find("\n| **10** |", 1, true) ~= nil, true)
+    test.equal(response:find("\n| **11** |", 1, true) ~= nil, true)
+    test.equal(response:find("\n| **12** |", 1, true) ~= nil, true)
+    test.equal(response:find("\n| **15** |", 1, true) ~= nil, true)
   end)
 
   test.it("records raw http requests and responses for raw response view", function()

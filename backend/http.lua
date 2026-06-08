@@ -813,49 +813,14 @@ end
 ---Return the append-only portion of a stream text event.
 ---@param current string
 ---@param incoming string
----@param state table|nil
+---@param _state table|nil
 ---@return string delta
-local function stream_text_delta(current, incoming, state)
+local function stream_text_delta(current, incoming, _state)
   current = tostring(current or "")
   incoming = tostring(incoming or "")
   if current == "" or incoming == "" then return incoming end
   if incoming:sub(1, #current) == current then
     return incoming:sub(#current + 1)
-  end
-  if current:sub(-#incoming) == incoming then return "" end
-
-  state = type(state) == "table" and state or nil
-  if state and state.repeat_pos then
-    local expected = current:sub(state.repeat_pos, state.repeat_pos + #incoming - 1)
-    if expected == incoming then
-      state.repeat_pos = state.repeat_pos + #incoming
-      return ""
-    end
-    state.repeat_pos = nil
-  end
-
-  if state
-    and not incoming:match("^%s+$")
-    and (current:match("[\r\n]%s*$") or current:match("[%.%!%?]%s*$"))
-  then
-    local start = math.max(1, #current - 2048)
-    local window = current:sub(start)
-    local search_from = 1
-    local repeat_pos
-    while true do
-      local found = window:find(incoming, search_from, true)
-      if not found then break end
-      local pos = start + found - 1
-      local before = pos > 1 and current:sub(pos - 1, pos - 1) or "\n"
-      if pos + #incoming - 1 < #current and before:match("[%s%(%)%[%]%{%}\"'`.,:;!?%-]") then
-        repeat_pos = pos
-      end
-      search_from = found + 1
-    end
-    if repeat_pos then
-      state.repeat_pos = repeat_pos + #incoming
-      return ""
-    end
   end
 
   return incoming
