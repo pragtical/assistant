@@ -1,7 +1,6 @@
 local core = require "core"
 local common = require "core.common"
 local config = require "core.config"
-local http = require "core.http"
 local json = require "core.json"
 local permission = require "plugins.assistant.permission"
 
@@ -555,6 +554,10 @@ end
 ---@return boolean ok
 ---@return table|string result
 function context.http_request(method, url, headers, body, timeout_ms)
+  local ok_http, http = pcall(require, "core.http")
+  if not ok_http then
+    return false, "HTTP tools are unavailable because networking is disabled."
+  end
   local done = false
   local cancelled = false
   local result_ok, result_err, result_body, result_info

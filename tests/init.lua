@@ -295,6 +295,46 @@ test.describe("assistant plugin init", function()
     test.equal(transport:is_starting(), false)
   end)
 
+  test.it("loads without requiring http when net is disabled", function()
+    local old_net = rawget(_G, "net")
+    local old_command_map = {}
+    for name, fn in pairs(command.map) do
+      old_command_map[name] = fn
+    end
+    local module_names = {
+      "plugins.assistant.promptview",
+      "plugins.assistant.tools",
+      "plugins.assistant.tool_context",
+      "plugins.assistant.tool.web",
+      "plugins.assistant.backend.http",
+      "plugins.assistant.backend.anthropic"
+    }
+    local old_modules = {}
+    for _, name in ipairs(module_names) do
+      old_modules[name] = package.loaded[name]
+      package.loaded[name] = nil
+    end
+    rawset(_G, "net", nil)
+
+    local ok, result = pcall(function()
+      return dofile("init.lua")
+    end)
+
+    rawset(_G, "net", old_net)
+    for _, name in ipairs(module_names) do
+      package.loaded[name] = old_modules[name]
+    end
+    for name in pairs(command.map) do
+      command.map[name] = nil
+    end
+    for name, fn in pairs(old_command_map) do
+      command.map[name] = fn
+    end
+
+    test.equal(ok, true)
+    test.not_nil(result)
+  end)
+
   test.it("opens agent picker for optional new conversation selection", function()
     local entered_label
     local entered_options

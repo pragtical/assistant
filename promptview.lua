@@ -17,9 +17,9 @@ local Conversation = require "plugins.assistant.conversation"
 local tools = require "plugins.assistant.tools"
 local process_tools = require "plugins.assistant.tool.process"
 local agent_config = require "plugins.assistant.agent_config"
-local HttpBackend = require "plugins.assistant.backend.http"
 local ModelDialog = require "plugins.assistant.ui.modeldialog"
 local Ollama = require "plugins.assistant.agent.ollama"
+local HttpBackend = rawget(_G, "net") and require "plugins.assistant.backend.http" or nil
 
 local ok_linewrapping, LineWrapping = pcall(require, "plugins.linewrapping")
 if not ok_linewrapping then LineWrapping = nil end
@@ -439,6 +439,11 @@ local function make_backend(name)
   local cls = registered_backend_classes[name or "http"]
     or registered_backend_classes.http
     or HttpBackend
+  if not cls then
+    cls = registered_backend_classes.appserver
+      or registered_backend_classes.acp
+      or registered_backend_classes.cli
+  end
   return cls()
 end
 
