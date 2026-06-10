@@ -1256,6 +1256,9 @@ function Conversation:to_provider_messages()
     if msg.meta and msg.meta.user_input_prompt then
       include = false
     end
+    if msg.meta and msg.meta.plan_update then
+      include = false
+    end
     if msg.role == "activity" then
       include = false
     end

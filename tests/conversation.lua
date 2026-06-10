@@ -472,6 +472,49 @@ test.describe("assistant conversation", function()
     test.equal(messages[#messages].role, "tool")
   end)
 
+  test.it("omits plan update messages between tool calls and results", function()
+    local conversation = Conversation(Ollama(), root)
+    conversation:add("user", "Implement it", { autosave = false })
+    conversation:add("tool_call", "Tool: update_plan", {
+      meta = {
+        provider_message = {
+          role = "assistant",
+          tool_calls = {
+            {
+              id = "call_plan",
+              type = "function",
+              ["function"] = {
+                name = "update_plan",
+                arguments = "{\"plan\":[{\"step\":\"Patch\",\"status\":\"completed\"}]}"
+              }
+            }
+          }
+        }
+      },
+      autosave = false
+    })
+    conversation:add("assistant", "### Plan Updated\n\n- [x] Patch", {
+      meta = { plan_update = true },
+      autosave = false
+    })
+    conversation:add("tool_result", "Tool: update_plan\nStatus: ok\nResult:\nplan updated", {
+      meta = {
+        provider_message = {
+          role = "tool",
+          tool_call_id = "call_plan",
+          content = "plan updated"
+        }
+      },
+      autosave = false
+    })
+
+    local messages = conversation:to_provider_messages()
+    test.equal(messages[#messages - 1].role, "assistant")
+    test.equal(type(messages[#messages - 1].tool_calls), "table")
+    test.equal(messages[#messages].role, "tool")
+    test.equal(messages[#messages].tool_call_id, "call_plan")
+  end)
+
   test.it("does not send empty assistant placeholders before tool calls", function()
     local conversation = Conversation(Ollama(), root)
     conversation:add("user", "Implement it", { autosave = false })
