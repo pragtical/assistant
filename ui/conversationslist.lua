@@ -9,6 +9,7 @@ local ListBox = require "widget.listbox"
 local MessageBox = require "widget.messagebox"
 local TextBox = require "widget.textbox"
 local ContextMenu = require "core.contextmenu"
+local View = require "core.view"
 local Conversation = require "plugins.assistant.conversation"
 
 ---Widget view listing saved assistant conversations for a project.
@@ -102,21 +103,28 @@ end
 
 ---Handle on mouse pressed.
 function ConversationsList:on_mouse_pressed(button, x, y, clicks)
-  if ConversationsList.menu.show_context_menu then
+  if not View.set_floating and ConversationsList.menu.show_context_menu then
     return ConversationsList.menu:on_mouse_pressed(button, x, y, clicks)
   end
   local processed = ConversationsList.super.on_mouse_pressed(self, button, x, y, clicks)
   local handled = false
-  if self.list:mouse_on_top(x, y) then
+  if (button == "right" or not View.set_floating) and self.list:mouse_on_top(x, y) then
     handled = ConversationsList.menu:on_mouse_pressed(button, x, y, clicks)
   end
   return handled or processed
 end
 
----Handle on mouse moved.
-function ConversationsList:on_mouse_moved(x, y, dx, dy)
-  if ConversationsList.menu:on_mouse_moved(x, y) then return true end
-  return ConversationsList.super.on_mouse_moved(self, x, y, dx, dy)
+if not View.set_floating then
+  ---Route popup motion manually on editor versions without floating views.
+  ---@param x number Screen x coordinate
+  ---@param y number Screen y coordinate
+  ---@param dx number Horizontal movement
+  ---@param dy number Vertical movement
+  ---@return boolean? handled Whether the menu or widget handled the motion
+  function ConversationsList:on_mouse_moved(x, y, dx, dy)
+    if ConversationsList.menu:on_mouse_moved(x, y) then return true end
+    return ConversationsList.super.on_mouse_moved(self, x, y, dx, dy)
+  end
 end
 
 ---Add conversation.
@@ -271,10 +279,12 @@ function ConversationsList:confirm_delete_all()
   )
 end
 
----Draw the view contents.
-function ConversationsList:draw()
-  if ConversationsList.super.draw(self) then
-    ConversationsList.menu:draw()
+if not View.set_floating then
+  ---Draw the popup manually on editor versions without floating views.
+  function ConversationsList:draw()
+    if ConversationsList.super.draw(self) then
+      ConversationsList.menu:draw()
+    end
   end
 end
 
@@ -300,7 +310,7 @@ function ConversationsList:update()
     size.x - style.padding.x * 2,
     size.y - self.textbox:get_bottom()
   )
-  ConversationsList.menu:update()
+  if not View.set_floating then ConversationsList.menu:update() end
 end
 
 command.add(function()

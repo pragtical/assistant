@@ -12,6 +12,7 @@ local MessageBox = require "widget.messagebox"
 local SelectBox = require "widget.selectbox"
 local Doc = require "core.doc"
 local DocView = require "core.docview"
+local View = require "core.view"
 local MarkdownView = require "core.markdownview"
 local Conversation = require "plugins.assistant.conversation"
 local tools = require "plugins.assistant.tools"
@@ -555,6 +556,10 @@ function PromptView:new(options)
   self.prompt.assistant_prompt_view = self
   self.transcript.assistant_prompt_view = self
   self.raw_transcript.assistant_prompt_view = self
+  -- Embedded views share the conversation's lifetime for owned floating popups.
+  self.prompt.parent = self
+  self.transcript.parent = self
+  self.raw_transcript.parent = self
   local prompt_view = self
   local function get_prompt_view_name()
     return prompt_view:get_name()
@@ -2352,8 +2357,10 @@ function PromptView:update()
   end
   self.prompt:update()
   self.mode_select:update()
-  PromptView.transcript_menu:update()
-  PromptView.raw_transcript_menu:update()
+  if not View.set_floating then
+    PromptView.transcript_menu:update()
+    PromptView.raw_transcript_menu:update()
+  end
 end
 
 ---Draw the view contents.
@@ -2361,8 +2368,10 @@ function PromptView:draw()
   if PromptView.super.draw(self) then
     self:get_transcript_view():draw()
     self.prompt:draw()
-    PromptView.transcript_menu:draw()
-    PromptView.raw_transcript_menu:draw()
+    if not View.set_floating then
+      PromptView.transcript_menu:draw()
+      PromptView.raw_transcript_menu:draw()
+    end
   end
 end
 
@@ -2380,10 +2389,10 @@ end
 
 ---Handle on mouse pressed.
 function PromptView:on_mouse_pressed(button, x, y, clicks)
-  if PromptView.transcript_menu.show_context_menu then
+  if not View.set_floating and PromptView.transcript_menu.show_context_menu then
     return PromptView.transcript_menu:on_mouse_pressed(button, x, y, clicks)
   end
-  if PromptView.raw_transcript_menu.show_context_menu then
+  if not View.set_floating and PromptView.raw_transcript_menu.show_context_menu then
     return PromptView.raw_transcript_menu:on_mouse_pressed(button, x, y, clicks)
   end
   if self.mode_select:is_visible() and self.mode_select:mouse_on_top(x, y) then
@@ -2427,8 +2436,10 @@ end
 
 ---Handle on mouse moved.
 function PromptView:on_mouse_moved(x, y, dx, dy)
-  if PromptView.transcript_menu:on_mouse_moved(x, y) then return true end
-  if PromptView.raw_transcript_menu:on_mouse_moved(x, y) then return true end
+  if not View.set_floating then
+    if PromptView.transcript_menu:on_mouse_moved(x, y) then return true end
+    if PromptView.raw_transcript_menu:on_mouse_moved(x, y) then return true end
+  end
   local transcript_view = self:get_transcript_view()
   local processed = PromptView.super.on_mouse_moved(self, x, y, dx, dy)
   if contains(self.prompt, x, y) or self.prompt:scrollbar_dragging() then

@@ -943,6 +943,31 @@ command.add(PromptView.compact_predicate, {
   end
 })
 
+if core.menu_view then
+  core.menu_view:register({ "tools" }, {
+    {
+      id = "assistant",
+      text = "Assistant",
+      items = {
+        { id = "new", text = "New Conversation", command = "assistant:new-conversation" },
+        { id = "select-agent", text = "New Conversation With Agent...", command = "assistant:select-agent-new-conversation" },
+        { id = "resume", text = "Resume Conversation...", command = "assistant:resume-conversation" },
+        { id = "conversations", text = "Conversations", command = "assistant:list-conversations" },
+        core.menu_view.DIVIDER,
+        { id = "memories", text = "Memories", command = "assistant:list-memories" },
+        { id = "add-memory", text = "Add Memory...", command = "assistant:add-memory" },
+        core.menu_view.DIVIDER,
+        { id = "model", text = "Select Model...", command = "assistant-conversation:select-model" },
+        { id = "configure", text = "Configure Agent...", command = "assistant-conversation:configure-agent" },
+        { id = "save", text = "Save Conversation", command = "assistant-conversation:save" },
+        { id = "rename", text = "Rename Conversation...", command = "assistant-conversation:rename" },
+        { id = "compact", text = "Compact Conversation", command = "assistant-conversation:compact" },
+        { id = "cancel", text = "Cancel Response", command = "assistant-conversation:cancel" }
+      }
+    }
+  }, "assistant")
+end
+
 keymap.add {
   ["ctrl+alt+a"] = "assistant:new-conversation",
   ["ctrl+shift+alt+a"] = "assistant:select-agent-new-conversation",

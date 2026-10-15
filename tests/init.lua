@@ -111,6 +111,23 @@ test.describe("assistant plugin init", function()
     )
   end)
 
+  test.it("registers Assistant commands in the global Tools menu", function()
+    if not core.menu_view then test.skip_now("requires the global menu") end
+    local registration = core.menu_view.registrations.assistant
+    test.not_nil(registration)
+    local submenu = registration.entries[1]
+    test.equal(submenu.id, "assistant")
+    local tools_menu
+    for _, item in ipairs(core.menu_view.items) do
+      if item.id == "tools" then tools_menu = item end
+    end
+    test.not_nil(tools_menu)
+    test.equal(registration.target, tools_menu.items)
+    for _, item in ipairs(submenu.items) do
+      if item.command then test.not_nil(command.map[item.command]) end
+    end
+  end)
+
   test.it("focuses the prompt editor when opening a conversation", function()
     local view = assistant.start_conversation("ollama")
 
@@ -295,8 +312,9 @@ test.describe("assistant plugin init", function()
     test.equal(transport:is_starting(), false)
   end)
 
-  test.it("loads without requiring http when net is disabled", function()
+  test.it("loads without networking or the global menu", function()
     local old_net = rawget(_G, "net")
+    local old_menu_view = core.menu_view
     local old_command_map = {}
     for name, fn in pairs(command.map) do
       old_command_map[name] = fn
@@ -315,12 +333,14 @@ test.describe("assistant plugin init", function()
       package.loaded[name] = nil
     end
     rawset(_G, "net", nil)
+    core.menu_view = nil
 
     local ok, result = pcall(function()
       return dofile("init.lua")
     end)
 
     rawset(_G, "net", old_net)
+    core.menu_view = old_menu_view
     for _, name in ipairs(module_names) do
       package.loaded[name] = old_modules[name]
     end

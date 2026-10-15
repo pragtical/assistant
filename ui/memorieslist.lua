@@ -14,6 +14,7 @@ local ListBox = require "widget.listbox"
 local MessageBox = require "widget.messagebox"
 local TextBox = require "widget.textbox"
 local ContextMenu = require "core.contextmenu"
+local View = require "core.view"
 local Conversation = require "plugins.assistant.conversation"
 
 ---Widget view listing saved assistant memories for a project.
@@ -369,21 +370,28 @@ end
 
 ---Handle mouse pressed.
 function MemoriesList:on_mouse_pressed(button, x, y, clicks)
-  if MemoriesList.menu.show_context_menu then
+  if not View.set_floating and MemoriesList.menu.show_context_menu then
     return MemoriesList.menu:on_mouse_pressed(button, x, y, clicks)
   end
   local processed = MemoriesList.super.on_mouse_pressed(self, button, x, y, clicks)
   local handled = false
-  if self.list:mouse_on_top(x, y) then
+  if (button == "right" or not View.set_floating) and self.list:mouse_on_top(x, y) then
     handled = MemoriesList.menu:on_mouse_pressed(button, x, y, clicks)
   end
   return handled or processed
 end
 
----Handle mouse moved.
-function MemoriesList:on_mouse_moved(x, y, dx, dy)
-  if MemoriesList.menu:on_mouse_moved(x, y) then return true end
-  return MemoriesList.super.on_mouse_moved(self, x, y, dx, dy)
+if not View.set_floating then
+  ---Route popup motion manually on editor versions without floating views.
+  ---@param x number Screen x coordinate
+  ---@param y number Screen y coordinate
+  ---@param dx number Horizontal movement
+  ---@param dy number Vertical movement
+  ---@return boolean? handled Whether the menu or widget handled the motion
+  function MemoriesList:on_mouse_moved(x, y, dx, dy)
+    if MemoriesList.menu:on_mouse_moved(x, y) then return true end
+    return MemoriesList.super.on_mouse_moved(self, x, y, dx, dy)
+  end
 end
 
 ---Add a memory row.
@@ -556,10 +564,12 @@ function MemoriesList:confirm_delete_all()
   )
 end
 
----Draw the view contents.
-function MemoriesList:draw()
-  if MemoriesList.super.draw(self) then
-    MemoriesList.menu:draw()
+if not View.set_floating then
+  ---Draw the popup manually on editor versions without floating views.
+  function MemoriesList:draw()
+    if MemoriesList.super.draw(self) then
+      MemoriesList.menu:draw()
+    end
   end
 end
 
@@ -585,7 +595,7 @@ function MemoriesList:update()
     size.x - style.padding.x * 2,
     size.y - self.textbox:get_bottom()
   )
-  MemoriesList.menu:update()
+  if not View.set_floating then MemoriesList.menu:update() end
 end
 
 command.add(function()
