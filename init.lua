@@ -825,6 +825,17 @@ assistant.register_backend("appserver", AppServerBackend)
 assistant.register_backend("acp", AcpBackend)
 
 command.add(nil, {
+  ["assistant:configure"] = function()
+    local settings = package.loaded["plugins.settings"]
+    if settings and settings.show_config then
+      settings.show_config(
+        "Configure Assistant", config.plugins.assistant.config_spec, "assistant"
+      )
+    else
+      core.warn("Assistant: settings plugin not available")
+    end
+  end,
+
   ["assistant:new-conversation"] = function()
     assistant.start_conversation()
   end,
@@ -962,7 +973,9 @@ if core.menu_view then
         { id = "save", text = "Save Conversation", command = "assistant-conversation:save" },
         { id = "rename", text = "Rename Conversation...", command = "assistant-conversation:rename" },
         { id = "compact", text = "Compact Conversation", command = "assistant-conversation:compact" },
-        { id = "cancel", text = "Cancel Response", command = "assistant-conversation:cancel" }
+        { id = "cancel", text = "Cancel Response", command = "assistant-conversation:cancel" },
+        core.menu_view.DIVIDER,
+        { id = "configure-assistant", text = "Configure Assistant...", command = "assistant:configure" }
       }
     }
   }, "assistant")
