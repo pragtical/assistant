@@ -877,6 +877,10 @@ function PromptView:update_streaming_transcript()
     and now - self.last_streaming_transcript_refresh < STREAMING_TRANSCRIPT_REFRESH_INTERVAL
     and not force_sentence_flush
   then
+    if core.request_update then
+      core.request_update(self.last_streaming_transcript_refresh
+        + STREAMING_TRANSCRIPT_REFRESH_INTERVAL - now)
+    end
     return true
   end
 
@@ -2342,12 +2346,25 @@ function PromptView:update()
   self.prompt.size.y = prompt_height
 
   local activity, active = animated_status_label(self:get_display_status())
-  self.activity:set_label(activity)
-  if active then core.redraw = true end
+  if self.activity.label ~= activity then
+    self.activity:set_label(activity)
+    core.redraw = true
+  end
+  if active then
+    if core.request_update then
+      local now = system.get_time()
+      core.request_update(.5 - now % .5)
+    else
+      core.redraw = true
+    end
+  end
   if self.pending_streaming_transcript_text then
     local last = self.last_streaming_transcript_refresh or 0
-    if system.get_time() - last >= STREAMING_TRANSCRIPT_REFRESH_INTERVAL then
+    local remaining = last + STREAMING_TRANSCRIPT_REFRESH_INTERVAL - system.get_time()
+    if remaining <= 0 then
       self:flush_streaming_transcript()
+    elseif core.request_update then
+      core.request_update(remaining)
     end
   end
   self:get_transcript_view():update()
